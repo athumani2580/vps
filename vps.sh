@@ -1,35 +1,19 @@
 #!/bin/bash
-# ubuntu-history.sh - Enhanced history for Ubuntu/Debian systems
-# Shows last 50 commands with system info
+# apt-history.sh - Show APT history for Ubuntu/Debian
 
-echo "========================================="
-echo "Ubuntu/Debian System History - Last 50"
-echo "========================================="
-
-# Show system info
-echo "System Information:"
-echo "-------------------"
-echo "Distribution: $(lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
-echo "Kernel: $(uname -rs)"
-echo "User: $(whoami)@$(hostname)"
-echo "Date: $(date)"
-echo "Uptime: $(uptime -p)"
+echo "=== Ubuntu/Debian APT History ==="
 echo ""
 
-# Check if history is enabled
-if [ -z "$HISTFILE" ]; then
-    HISTFILE=~/.bash_history
-fi
-
-echo "History Settings:"
-echo "----------------"
-echo "HISTFILE: $HISTFILE"
-echo "HISTSIZE: ${HISTSIZE:-Default (500)}"
-echo "HISTFILESIZE: ${HISTFILESIZE:-Default (2000)}"
+# Show recent apt commands
+echo "Recent APT commands:"
+history | grep -E "apt (install|remove|update|upgrade|search|purge)" | tail -20
 echo ""
 
-# Show last 50 commands
-echo "Last 50 Commands:"
-echo "-----------------"
+# Show dpkg history
+echo "Recent package installations:"
+grep " install " /var/log/dpkg.log 2>/dev/null | tail -10
+echo ""
+
+# Show last 50 all commands
+echo "All recent commands:"
 history | tail -50
-echo "========================================="
