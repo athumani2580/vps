@@ -1,8 +1,8 @@
 #!/bin/bash
-# hist.sh - Enhanced history viewer for Ubuntu/Debian
+# hist.sh - Enhanced history viewer for Ubuntu/Debian with command numbers
 # Usage: ./hist.sh [-n NUM] [-u USER] [-d DATE] [-s SEARCH]
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 DEFAULT_COUNT=50
 
 show_help() {
@@ -21,14 +21,14 @@ show_help() {
     echo "  -v         Show version"
     echo ""
     echo "Examples:"
-    echo "  hist.sh -n 100          # Show last 100 commands"
-    echo "  hist.sh -s apt          # Search for 'apt' commands"
-    echo "  hist.sh -d 2024-01-15   # Show commands from Jan 15, 2024"
-    echo "  hist.sh -u root -n 20   # Show last 20 root commands"
+    echo "  hist.sh -n 100          # Show last 100 commands with numbers"
+    echo "  hist.sh -s apt          # Search for 'apt' commands with numbers"
+    echo "  hist.sh -d 2024-01-15   # Show commands from Jan 15, 2024 with numbers"
+    echo "  hist.sh -u root -n 20   # Show last 20 root commands with numbers"
 }
 
 show_version() {
-    echo "hist.sh v$VERSION - Ubuntu/Debian History Viewer"
+    echo "hist.sh v$VERSION - Ubuntu/Debian History Viewer with Command Numbers"
 }
 
 show_last_commands() {
@@ -42,7 +42,7 @@ show_last_commands() {
     
     # System info header
     echo "========================================"
-    echo "Ubuntu/Debian Command History"
+    echo "Ubuntu/Debian Command History (with numbers)"
     echo "========================================"
     echo "Distribution: $(lsb_release -ds 2>/dev/null || cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"')"
     echo "Kernel: $(uname -rs)"
@@ -61,9 +61,14 @@ show_last_commands() {
         if [ "$EUID" -eq 0 ]; then
             echo "Showing history for user: $user"
             if [ "$use_file" = "true" ]; then
-                sudo tail -n "$count" "/home/$user/.bash_history" 2>/dev/null || \
-                sudo tail -n "$count" "/home/$user/.zsh_history" 2>/dev/null | sed 's/^: [0-9]*:[0-9]*;//'
+                # Read from file with line numbers
+                if sudo test -f "/home/$user/.bash_history"; then
+                    sudo tail -n "$count" "/home/$user/.bash_history" | nl -w 3 -s "  "
+                elif sudo test -f "/home/$user/.zsh_history"; then
+                    sudo tail -n "$count" "/home/$user/.zsh_history" | sed 's/^: [0-9]*:[0-9]*;//' | nl -w 3 -s "  "
+                fi
             else
+                # Use sudo to run history command
                 sudo -u "$user" bash -c "history $count"
             fi
         else
@@ -73,25 +78,45 @@ show_last_commands() {
     else
         # Current user history
         if [ "$use_file" = "true" ]; then
-            tail -n "$count" ~/.bash_history
+            # Read from file with line numbers
+            tail -n "$count" ~/.bash_history | nl -w 3 -s "  "
         else
+            # Use history command (already includes numbers)
             history "$count"
         fi
     fi | {
         # Apply filters if specified
         if [ -n "$date_filter" ]; then
+            # For history command output with timestamps
             grep "^[ 0-9]*[0-9]  $date_filter"
         elif [ -n "$search" ]; then
-            grep -i "$search"
+            # Highlight search term
+            grep -i --color=always "$search"
         else
             cat
         fi
     } | {
         # Count frequency or just display
         if [ "$count_freq" = "true" ]; then
-            awk '{cmd=$2; for(i=3;i<=NF;i++) cmd=cmd " " $i; count[cmd]++} END {for (cmd in count) printf "%4d %s\n", count[cmd], cmd}' | sort -rn
+            # For frequency count, remove line numbers first
+            sed 's/^[[:space:]]*[0-9]\+[[:space:]]*//' | \
+            awk '{cmd=$1; for(i=2;i<=NF;i++) cmd=cmd " " $i; count[cmd]++} 
+                 END {for (cmd in count) printf "%4d  %s\n", count[cmd], cmd}' | \
+            sort -rn
         else
-            cat
+            # Ensure consistent numbering format
+            awk '{
+                # If line starts with a number and space (already numbered by history)
+                if ($0 ~ /^[[:space:]]*[0-9]+[[:space:]]+/) {
+                    print $0
+                } else if ($0 ~ /^[[:space:]]*[0-9]+[[:space:]]*$/) {
+                    # Just a number, skip or handle
+                    next
+                } else {
+                    # Add sequential number
+                    printf "%4d  %s\n", NR, $0
+                }
+            }'
         fi
     }
     
