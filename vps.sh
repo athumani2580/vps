@@ -1,47 +1,46 @@
 #!/bin/bash
-# check_history.sh - Works on Linux, macOS, and Unix-like systems
+# history50.sh - Show last 50 commands for Ubuntu/Debian
+# Usage: ./history50.sh
 
-show_last_commands() {
-    echo "=== System Information ==="
-    uname -a
+echo "========================================"
+echo "Ubuntu/Debian Command History - Last 50"
+echo "========================================"
+echo "User: $(whoami)"
+echo "Hostname: $(hostname)"
+echo "Date: $(date)"
+echo "Distribution: $(lsb_release -d | cut -f2)"
+echo "Kernel: $(uname -r)"
+echo "----------------------------------------"
+
+# Check if running in interactive shell
+if [[ $- == *i* ]]; then
+    echo "Interactive shell detected"
+else
+    echo "Non-interactive shell - history may be limited"
+fi
+
+echo ""
+echo "=== LAST 50 COMMANDS ==="
+
+# Method 1: Try standard history command
+history | tail -50
+
+# If history is empty, try reading from history file
+if [ $? -ne 0 ] || [ $(history | wc -l) -eq 0 ]; then
     echo ""
+    echo "Note: Using history file directly..."
+    echo "----------------------------------------"
     
-    echo "=== Last 50 Commands ==="
-    
-    # Try different methods to get history
-    if command -v history &> /dev/null; then
-        # Method 1: Standard history command
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            # macOS
-            history -n | tail -50
-        else
-            # Linux/Unix
-            history | tail -50
-        fi
-    elif [[ -f ~/.bash_history ]]; then
-        # Method 2: Read bash history file
+    # Check which history file exists
+    if [ -f ~/.bash_history ]; then
         tail -50 ~/.bash_history
-    elif [[ -f ~/.zsh_history ]]; then
-        # Method 3: Read zsh history file
-        tail -50 ~/.zsh_history 2>/dev/null || echo "Cannot read zsh history directly"
-    elif [[ -f ~/.history ]]; then
-        # Method 4: Generic history file
-        tail -50 ~/.history
+    elif [ -f ~/.zsh_history ]; then
+        tail -50 ~/.zsh_history | sed 's/^: [0-9]*:[0-9]*;//'
     else
-        echo "No history found in common locations"
-        echo "Trying alternative methods..."
-        
-        # Try to use fc command (available in some shells)
-        fc -l 1 2>/dev/null | tail -50 && return 0
-        
-        # Try to use built-in shell history
-        set -o history 2>/dev/null
-        HISTFILE=~/.bash_history
-        history 2>/dev/null | tail -50 && return 0
-        
-        echo "Unable to retrieve command history"
-        return 1
+        echo "No history files found!"
+        echo "Common locations checked:"
+        ls -la ~/.*history 2>/dev/null || echo "  No history files in home directory"
     fi
-}
+fi
 
-show_last_commands
+echo "========================================"
