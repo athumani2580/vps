@@ -1,44 +1,21 @@
 #!/bin/bash
-# Save as setup-history-auto.sh
 
-# Backup original .bashrc
-cp ~/.bashrc ~/.bashrc.backup.$(date +%Y%m%d)
-
-# Create scripts directory
-mkdir -p ~/scripts
-
-# Create auto-history script
-cat > ~/scripts/auto-history.sh << 'EOF'
-#!/bin/bash
-# Auto-show history on SSH login
-
-if [ -n "$SSH_CONNECTION" ]; then
+IP=$(echo $SSH_CONNECTION | awk '{print $1}')
+if [ -n "$IP" ]; then
     echo ""
-    echo "╔══════════════════════════════════════════════════╗"
-    echo "║               COMMAND HISTORY LOG                ║"
-    echo "╠══════════════════════════════════════════════════╣"
-    echo "║ Last login: $(who -b | awk '{print $3, $4}')                 ║"
-    echo "║ User: $(whoami) | Host: $(hostname)                 ║"
-    echo "╚══════════════════════════════════════════════════╝"
-    echo ""
-    echo "Last 50 commands:"
-    echo "────────────────────────────────────────────────────"
+    echo "🔐 SSH Login from: $IP"
+    echo "🕒 Time: $(date)"
+    echo "📜 Recent command history:"
+    echo "----------------------------------------"
     
-    # Show history with line numbers
-    history | tail -50 | nl -w2 -s'. '
+    # Show last 50 commands with timestamps
+    if command -v tac >/dev/null; then
+        tail -100 ~/.bash_history | tac | head -50 | cat -n
+    else
+        history | tail -50
+    fi
     
     echo ""
-    echo "Total commands in history: $(history | wc -l)"
+    echo "💡 Tip: Use 'history' to see full history"
     echo ""
 fi
-EOF
-
-chmod +x ~/scripts/auto-history.sh
-
-# Add to .bashrc
-echo "" >> ~/.bashrc
-echo "# Auto-show history on SSH login" >> ~/.bashrc
-echo "source ~/scripts/auto-history.sh" >> ~/.bashrc
-echo "" >> ~/.bashrc
-
-echo "Setup complete! Reconnect via SSH to see the history."
