@@ -1,15 +1,15 @@
-# Enhanced version with logging
-export HISTTIMEFORMAT="%Y-%m-%d %T "
-export HISTSIZE=10000
-export HISTFILESIZE=20000
-export HISTFILE=~/.bash_history_$(whoami)
+#!/bin/bash
 
-# Auto-show recent commands on SSH login
-if [ -n "$SSH_CONNECTION" ]; then
-    echo ""
-    echo "🔍 Recent Activity (last 50 commands):"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    tail -50 ~/.bash_history 2>/dev/null || history | tail -50
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-fi
+# Show what will be deleted
+echo "Last 50 commands to be deleted:"
+history | tail -50
+
+# Auto-delete without confirmation
+for i in {1..50}; do
+    history -d $(history | tail -1 | awk '{print $1}') 2>/dev/null
+done
+
+# Write changes to history file
+history -w
+
+echo "Deleted last 50 commands"
