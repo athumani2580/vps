@@ -4,11 +4,18 @@
 
 echo "=== FIXING EDNS PROXY INSTALLATION ==="
 
-# 1. Fix the Python script - remove the missing skip_name method
-sed -i '/def skip_name/,/^    def/ s/^/#/' /usr/local/bin/edns-proxy.py
-sed -i '/DNSMessage.skip_name/d' /usr/local/bin/edns-proxy.py
+# 1. STOP systemd-resolved FIRST (it's using port 53)
+echo "Stopping systemd-resolved to free port 53..."
+systemctl stop systemd-resolved
+systemctl disable systemd-resolved
 
-# 2. Create a simpler version that will work
+# 2. Disable DNSStubListener to prevent systemd-resolved from using port 53
+echo "Disabling DNSStubListener..."
+sed -i 's/#DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
+sed -i '/^DNSStubListener=.*/d' /etc/systemd/resolved.conf
+echo "DNSStubListener=no" >> /etc/systemd/resolved.conf
+
+# 3. Create a simple EDNS proxy script
 cat > /tmp/simple-edns-proxy.py << 'EOF'
 #!/usr/bin/env python3
 """Simple EDNS Proxy for MTU 512"""
@@ -17,7 +24,7 @@ import struct
 import time
 import sys
 
-LISTEN_HOST = "0.0.0.0"
+LISTEN_HOST = "127.0.0.1"  # Change to 127.0.0.1 instead of 0.0.0.0
 LISTEN_PORT = 53
 UPSTREAM_HOST = "127.0.0.1"
 UPSTREAM_PORT = 5300
@@ -88,9 +95,12 @@ def main():
     sock.bind((LISTEN_HOST, LISTEN_PORT))
     sock.settimeout(5.0)
     
+    print(f"Successfully bound to port {LISTEN_PORT}")
+    
     while True:
         try:
             data, addr = sock.recvfrom(4096)
+            print(f"Received query from {addr[0]}:{addr[1]}, size: {len(data)}")
             
             # Patch for upstream
             upstream_data = patch_edns_size(data, SERVER_MTU)
@@ -109,6 +119,7 @@ def main():
             
             # Send to client
             sock.sendto(client_response, addr)
+            print(f"Sent response to {addr[0]}:{addr[1]}, size: {len(client_response)}")
             
         except socket.timeout:
             continue
@@ -127,7 +138,12 @@ EOF
 # Make it executable
 chmod +x /tmp/simple-edns-proxy.py
 
-# 3. Create a simple systemd service
+# 4. Kill any process using port 53
+echo "Killing processes using port 53..."
+fuser -k 53/udp 2>/dev/null || true
+fuser -k 53/tcp 2>/dev/null || true
+
+# 5. Create systemd service
 cat > /etc/systemd/system/edns-proxy.service << 'EOF'
 [Unit]
 Description=Simple EDNS Proxy for MTU 512
@@ -139,12 +155,14 @@ ExecStart=/usr/bin/python3 /tmp/simple-edns-proxy.py
 Restart=always
 RestartSec=3
 User=root
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 4. Apply sysctl optimizations
+# 6. Apply sysctl optimizations
 cat > /etc/sysctl.d/99-mtu512.conf << 'EOF'
 net.core.rmem_max=16777216
 net.core.wmem_max=16777216
@@ -157,38 +175,56 @@ net.core.netdev_max_backlog=100000
 net.core.somaxconn=65535
 EOF
 
-sysctl -p /etc/sysctl.d/99-mtu512.conf
+sysctl -p /etc/sysctl.d/99-mtu512.conf 2>/dev/null || true
 
-# 5. Setup TCP MSS clamping
-iptables -t mangle -F
-iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 492
+# 7. Setup TCP MSS clamping
+echo "Setting up iptables rules..."
+iptables -t mangle -F 2>/dev/null || true
+iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 492 2>/dev/null || true
 
-# 6. Reload systemd and start
+# 8. Reload systemd and start
 systemctl daemon-reload
 systemctl enable edns-proxy
 systemctl restart edns-proxy
 
-# 7. Check status
-sleep 3
+# 9. Wait and check status
+sleep 5
 echo ""
 echo "=== CHECKING STATUS ==="
 systemctl status edns-proxy --no-pager
 
 echo ""
 echo "=== CHECKING PORT 53 ==="
-ss -tulpn | grep :53
+ss -tulpn | grep :53 || echo "No process listening on port 53"
 
 echo ""
 echo "=== TESTING DNS ==="
 if command -v dig &> /dev/null; then
-    timeout 3 dig @127.0.0.1 google.com +short && echo "✓ DNS working" || echo "✗ DNS failed"
+    echo "Testing DNS query..."
+    timeout 5 dig @127.0.0.1 google.com +short +time=3 +tries=2
+    if [ $? -eq 0 ]; then
+        echo "✓ DNS working"
+    else
+        echo "✗ DNS failed"
+        echo "Checking logs..."
+        journalctl -u edns-proxy -n 20 --no-pager
+    fi
 else
-    echo "dig not installed, install with: apt install dnsutils"
+    echo "dig not installed, installing dnsutils..."
+    apt-get update && apt-get install -y dnsutils
+    timeout 5 dig @127.0.0.1 google.com +short +time=3 +tries=2
 fi
 
 echo ""
+echo "=== FIXING RESOLV.CONF ==="
+# Update resolv.conf to use local proxy
+echo "nameserver 127.0.0.1" > /etc/resolv.conf
+echo "options edns0" >> /etc/resolv.conf
+
+echo ""
 echo "=== INSTALLATION COMPLETE ==="
-echo "EDNS Proxy is running on port 53"
+echo "EDNS Proxy should be running on port 53"
 echo "Client MTU: 512, Server MTU: 1800"
 echo "Check status: systemctl status edns-proxy"
 echo "Test: dig @127.0.0.1 google.com"
+echo "View logs: journalctl -u edns-proxy -f"
