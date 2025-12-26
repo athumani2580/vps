@@ -1,199 +1,114 @@
 #!/bin/bash
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-# Functions
-print_success() {
-    echo -e "${GREEN}[✓]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[✗]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[!]${NC} $1"
-}
-
-echo "╔════════════════════════════════════════════════════╗"
-echo "║    Private Repository Installation with Token      ║"
-echo "╚════════════════════════════════════════════════════╝"
-echo ""
-
-# Ask for GitHub token
-echo "======================================================"
-echo "    GitHub Authentication Required                   "
-echo "======================================================"
-echo ""
-read -p "Enter your GitHub Personal Access Token: " GITHUB_TOKEN
-
-if [ -z "$GITHUB_TOKEN" ]; then
-    print_error "Token cannot be empty! Exiting..."
-    exit 1
-fi
-
-# Repository details
+# Configuration
+TOKEN="your_github_personal_access_token"
 REPO_OWNER="athumani2580"
 REPO_NAME="DNS"
 BRANCH="main"
-FILE_PATH="slowdns/install.sh"
-INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$BRANCH/$FILE_PATH"
+SCRIPT_PATH="slowdns/setup.sh"
+OUTPUT_FILE="setup.sh"
 
-echo ""
-echo "======================================================"
-echo "    Downloading Installation Script                   "
-echo "======================================================"
+# Create the script
+cat > private_repo_setup.sh << 'EOF'
+#!/bin/bash
 
-# Method 1: Using curl with token in header
-print_success "Attempting download with token authentication..."
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-# Create a temporary header file
-HEADER_FILE="/tmp/github_headers.txt"
-echo "Authorization: token $GITHUB_TOKEN" > $HEADER_FILE
+# Configuration - EDIT THESE VALUES
+TOKEN=""
+REPO_OWNER="athumani2580"
+REPO_NAME="DNS"
+BRANCH="main"
+SCRIPT_PATH="slowdns/setup.sh"
+OUTPUT_FILE="setup.sh"
 
-# Download using curl with custom headers
-curl -s -H "Authorization: token $GITHUB_TOKEN" \
-     -H "Accept: application/vnd.github.v3.raw" \
-     -o install_private.sh \
-     "$INSTALL_SCRIPT_URL"
+# Function to print colored messages
+print_message() {
+    echo -e "${2}${1}${NC}"
+}
 
-if [ $? -eq 0 ] && [ -f "install_private.sh" ]; then
-    print_success "Download successful!"
+# Check if token is set
+if [ -z "$TOKEN" ]; then
+    print_message "Error: GitHub token is not set!" "$RED"
+    print_message "Please create a GitHub Personal Access Token and add it to the script." "$YELLOW"
+    print_message "Go to: GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)" "$YELLOW"
+    print_message "Required scope: repo (for private repositories)" "$YELLOW"
+    exit 1
+fi
+
+# Download script from private repository
+print_message "Downloading script from private repository..." "$GREEN"
+
+# Try using curl first
+if command -v curl &> /dev/null; then
+    print_message "Using curl to download..." "$YELLOW"
+    curl -s -H "Authorization: token $TOKEN" \
+         -H "Accept: application/vnd.github.v3.raw" \
+         -L "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/$SCRIPT_PATH?ref=$BRANCH" \
+         -o "$OUTPUT_FILE"
     
-    # Check if file is not empty
-    if [ -s "install_private.sh" ]; then
-        print_success "Script downloaded successfully ($(wc -l < install_private.sh) lines)"
+    if [ $? -eq 0 ] && [ -s "$OUTPUT_FILE" ]; then
+        print_message "Download successful using curl!" "$GREEN"
     else
-        print_error "Downloaded file is empty!"
+        print_message "Curl download failed, trying wget..." "$YELLOW"
+        rm -f "$OUTPUT_FILE"
+    fi
+fi
+
+# Try wget if curl failed or not available
+if [ ! -s "$OUTPUT_FILE" ] && command -v wget &> /dev/null; then
+    print_message "Using wget to download..." "$YELLOW"
+    wget --header="Authorization: token $TOKEN" \
+         --header="Accept: application/vnd.github.v3.raw" \
+         -O "$OUTPUT_FILE" \
+         "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/$SCRIPT_PATH?ref=$BRANCH"
+    
+    if [ $? -eq 0 ] && [ -s "$OUTPUT_FILE" ]; then
+        print_message "Download successful using wget!" "$GREEN"
+    else
+        print_message "Download failed!" "$RED"
         exit 1
     fi
-else
-    print_error "Download failed with curl headers method."
-    
-    # Method 2: Using wget with token
-    print_warning "Trying alternative method..."
-    wget --header="Authorization: token $GITHUB_TOKEN" \
-         --header="Accept: application/vnd.github.v3.raw" \
-         -O install_private.sh \
-         "$INSTALL_SCRIPT_URL"
-    
-    if [ $? -eq 0 ] && [ -f "install_private.sh" ] && [ -s "install_private.sh" ]; then
-        print_success "Download successful with wget!"
-    else
-        # Method 3: Using API endpoint
-        print_warning "Trying GitHub API method..."
-        API_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/$FILE_PATH"
-        
-        curl -s -H "Authorization: token $GITHUB_TOKEN" \
-             -H "Accept: application/vnd.github.v3.raw" \
-             "$API_URL" -o install_private.sh
-        
-        if [ $? -eq 0 ] && [ -f "install_private.sh" ] && [ -s "install_private.sh" ]; then
-            print_success "Download successful via GitHub API!"
-        else
-            print_error "All download methods failed!"
-            print_error "Please check:"
-            print_error "1. Token validity and permissions"
-            print_error "2. Repository access"
-            print_error "3. Internet connection"
-            exit 1
-        fi
-    fi
 fi
 
-# Make script executable
-chmod +x install_private.sh
-
-echo ""
-echo "======================================================"
-echo "    Verifying Script Contents                         "
-echo "======================================================"
-
-# Check if it's a valid bash script
-if head -n 1 install_private.sh | grep -q "^#!/bin/bash"; then
-    print_success "Valid bash script detected"
-else
-    print_warning "Script doesn't start with #!/bin/bash, but will continue..."
+# Check if download was successful
+if [ ! -s "$OUTPUT_FILE" ]; then
+    print_message "Error: Failed to download the script!" "$RED"
+    print_message "Check your:" "$YELLOW"
+    print_message "1. Token permissions (needs 'repo' scope for private repos)" "$YELLOW"
+    print_message "2. Repository URL and path" "$YELLOW"
+    print_message "3. Internet connection" "$YELLOW"
+    exit 1
 fi
 
-# Show first few lines
-echo ""
-print_success "Preview of script:"
-echo "------------------------------------------------------"
-head -n 10 install_private.sh
-echo "------------------------------------------------------"
+# Make the script executable
+chmod +x "$OUTPUT_FILE"
+print_message "Script made executable" "$GREEN"
 
-echo ""
-echo "======================================================"
-echo "    Starting Installation                             "
-echo "======================================================"
+# Execute the script
+print_message "Executing the downloaded script..." "$GREEN"
+print_message "==========================================" "$YELLOW"
+./"$OUTPUT_FILE"
 
-read -p "Do you want to proceed with installation? (y/n): " confirm
-
-if [[ $confirm =~ ^[Yy]$ ]]; then
-    print_success "Starting installation..."
-    echo "------------------------------------------------------"
-    
-    # Run the installation script
-    ./install_private.sh
-    
-    INSTALL_STATUS=$?
-    
-    if [ $INSTALL_STATUS -eq 0 ]; then
-        print_success "Installation completed successfully!"
-    else
-        print_error "Installation script exited with code: $INSTALL_STATUS"
-    fi
+# Check execution result
+if [ $? -eq 0 ]; then
+    print_message "==========================================" "$YELLOW"
+    print_message "Script executed successfully!" "$GREEN"
 else
-    print_warning "Installation cancelled by user."
-    
-    # Ask if user wants to view the script
-    read -p "Do you want to view the entire script? (y/n): " view_script
-    if [[ $view_script =~ ^[Yy]$ ]]; then
-        echo ""
-        echo "======================================================"
-        echo "    Script Contents                                   "
-        echo "======================================================"
-        cat install_private.sh
-    fi
+    print_message "==========================================" "$YELLOW"
+    print_message "Script execution failed!" "$RED"
 fi
+EOF
 
-# Post-installation cleanup and setup
+# Make the generated script executable
+chmod +x private_repo_setup.sh
+
+echo "Script created: private_repo_setup.sh"
 echo ""
-echo "======================================================"
-echo "    Post-Installation Setup                           "
-echo "======================================================"
-
-# Clean up sensitive files
-print_success "Cleaning up sensitive data..."
-rm -f $HEADER_FILE
-# Clear token from environment
-unset GITHUB_TOKEN
-# Clear bash history
-history -c
-print_success "Sensitive data cleaned"
-
-# Start systemd-resolved if available
-if command -v systemctl >/dev/null 2>&1; then
-    print_success "Starting systemd-resolved service..."
-    systemctl start systemd-resolved 2>/dev/null || print_warning "Could not start systemd-resolved"
-else
-    print_warning "systemctl not found, skipping service start"
-fi
-
-# Final cleanup
-print_success "Cleaning up installation files..."
-rm -f install_private.sh
-
-echo ""
-echo "╔════════════════════════════════════════════════════╗"
-echo "║                    Installation                    ║"
-echo "║                     Complete!                      ║"
-echo "╚════════════════════════════════════════════════════╝"
-echo ""
-print_success "Thank you for using the installation script!"
-echo ""
+echo "IMPORTANT: Before running the script:"
+echo "1. Edit private_repo_setup.sh and set your TOKEN"
+echo "2. Run: ./private_repo_setup.sh"
