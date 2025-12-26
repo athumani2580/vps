@@ -11,6 +11,5 @@ fi
 
 GITHUB_TOKEN=$(cat "$TOKEN_FILE")
 
-apt-get update && apt-get install -y sudo && \
 sudo bash -c "$(curl -fsSL -H \"Authorization: token $GITHUB_TOKEN\" \
-https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/no1.sh)"
+https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/install.sh)"
