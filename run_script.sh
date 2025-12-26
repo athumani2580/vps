@@ -1,38 +1,37 @@
 #!/bin/bash
+# Direct install with token prompt - copy and paste this entire block
 
-# Simple script that prompts for token
-read -sp "Enter GitHub Personal Access Token: " TOKEN
+echo "╔══════════════════════════════════════════╗"
+echo "║   Private Repository Installer           ║"
+echo "║   athumani2580/DNS/slowdns/install.sh    ║"
+echo "╚══════════════════════════════════════════╝"
 echo ""
-
-REPO_OWNER="athumani2580"
-REPO_NAME="DNS"
-BRANCH="main"
-SCRIPT_PATH="slowdns/setup.sh"
-OUTPUT_FILE="setup.sh"
-
-# Download using the token
-if command -v curl &> /dev/null; then
-    curl -s -H "Authorization: token $TOKEN" \
-         -H "Accept: application/vnd.github.v3.raw" \
-         -L "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/$SCRIPT_PATH?ref=$BRANCH" \
-         -o "$OUTPUT_FILE"
-elif command -v wget &> /dev/null; then
-    wget --header="Authorization: token $TOKEN" \
-         --header="Accept: application/vnd.github.v3.raw" \
-         -O "$OUTPUT_FILE" \
-         "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/$SCRIPT_PATH?ref=$BRANCH"
-else
-    echo "Error: Neither curl nor wget is installed!"
+echo "NOTE: GitHub token required for private repo access"
+echo "Get token from: https://github.com/settings/tokens"
+echo "(Select 'repo' scope for private repositories)"
+echo ""
+read -sp "Enter GitHub Token: " TOKEN
+echo ""
+echo ""
+[ -z "$TOKEN" ] && echo "Error: Token required!" && exit 1
+echo "Downloading installer..."
+TEMP_FILE="/tmp/install_$(date +%s).sh"
+curl -s -H "Authorization: token $TOKEN" \
+     -H "Accept: application/vnd.github.v3.raw" \
+     -o "$TEMP_FILE" \
+     "https://api.github.com/repos/athumani2580/DNS/contents/slowdns/install.sh" || \
+curl -s -H "Authorization: token $TOKEN" \
+     -o "$TEMP_FILE" \
+     "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/install.sh"
+if [ ! -s "$TEMP_FILE" ] || grep -q '"message"' "$TEMP_FILE" 2>/dev/null; then
+    echo "ERROR: Download failed! Check your token."
+    [ -s "$TEMP_FILE" ] && cat "$TEMP_FILE"
+    rm -f "$TEMP_FILE"
     exit 1
 fi
-
-# Check if download was successful
-if [ -s "$OUTPUT_FILE" ]; then
-    chmod +x "$OUTPUT_FILE"
-    echo "Script downloaded successfully!"
-    echo "Executing script..."
-    ./"$OUTPUT_FILE"
-else
-    echo "Error: Failed to download script!"
-    echo "Check your token and repository permissions."
-fi
+chmod +x "$TEMP_FILE"
+echo "Executing installer..."
+echo "══════════════════════════════════════════"
+bash "$TEMP_FILE"
+echo "══════════════════════════════════════════"
+rm -f "$TEMP_FILE"
