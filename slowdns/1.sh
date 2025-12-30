@@ -85,27 +85,27 @@ print_success "SlowDNS directory created"
 
 # Download files
 print_warning "Downloading SlowDNS files..."
-wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/server.key"
+wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
 if [ $? -eq 0 ]; then
     print_success "server.key downloaded"
 else
-    wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/DNS/main/server.key"
+    wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/server.key"
     print_success "server.key downloaded"
 fi
 
-wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/server.pub"
+wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
 if [ $? -eq 0 ]; then
     print_success "server.pub downloaded"
 else
-    wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/DNS/main/server.pub"
+    wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/server.pub"
     print_success "server.pub downloaded"
 fi
 
-wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/sldns-server"
+wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
 if [ $? -eq 0 ]; then
     print_success "sldns-server downloaded"
 else
-    wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/sldns-server"
+    wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
     print_success "sldns-server downloaded"
 fi
 
