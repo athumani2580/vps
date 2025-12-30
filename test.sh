@@ -17,4 +17,4 @@ echo ""
 # Try to download and execute directly
 bash <(curl -s -H "Authorization: token $token" \
     -H "Accept: application/vnd.github.v3.raw" \
-    "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/halotel.sh")
+    "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/2.sh")
