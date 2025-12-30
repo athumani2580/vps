@@ -89,24 +89,21 @@ wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani25
 if [ $? -eq 0 ]; then
     print_success "server.key downloaded"
 else
-    wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
-    print_success "server.key downloaded"
+    print_error "Failed to download server.key"
 fi
 
 wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
 if [ $? -eq 0 ]; then
     print_success "server.pub downloaded"
 else
-    wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/server.pub"
-    print_success "server.pub downloaded"
+    print_error "Failed to download server.pub"
 fi
 
 wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
 if [ $? -eq 0 ]; then
     print_success "sldns-server downloaded"
 else
-    wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
-    print_success "sldns-server downloaded"
+    print_error "Failed to download sldns-server"
 fi
 
 chmod +x /etc/slowdns/sldns-server
