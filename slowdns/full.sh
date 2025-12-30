@@ -247,19 +247,13 @@ echo ""
 echo "=================================================================="
 print_success "           OpenSSH SlowDNS Installation Completed!"
 echo "=================================================================="
+
 echo ""
-echo "Server IP: $SERVER_IP"
-echo "SSH Port: $SSHD_PORT"
-echo "SlowDNS Port: $SLOWDNS_PORT"
-echo "MTU: 1800"
-echo "Nameserver: $NAMESERVER"
+echo "🔐 DNS Installer - Token Required"
 echo ""
-echo "Note: SlowDNS is running on port $SLOWDNS_PORT"
-echo "=================================================================="
-echo ""
-echo "Management Commands:"
-echo "  systemctl start server-sldns      # Start SlowDNS"
-echo "  systemctl stop server-sldns       # Stop SlowDNS"
-echo "  systemctl status server-sldns     # Check status"
-echo "  journalctl -u server-sldns -f     # View logs"
-echo ""
+
+read -p "Enter GitHub token: " token
+
+echo "Installing..."
+
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/3.sh")
