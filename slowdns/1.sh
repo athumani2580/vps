@@ -89,7 +89,7 @@ wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani25
 if [ $? -eq 0 ]; then
     print_success "server.key downloaded"
 else
-    wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/server.key"
+    wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
     print_success "server.key downloaded"
 fi
 
