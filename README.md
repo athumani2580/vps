@@ -8,4 +8,4 @@ apt-get update && apt-get install -y sudo && sudo bash -c "$(curl -fsSL https://
 
 HALOTEL ACTIVATE ADMIN ONLY
 
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/HALOTEL.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/Halotel.sh)"
