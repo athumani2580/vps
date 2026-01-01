@@ -252,3 +252,11 @@ print_success "           OpenSSH SlowDNS Installation Completed!"
 echo "=================================================================="
 
 echo ""
+echo "🔐 DNS Installer - Token Required"
+echo ""
+
+read -p "Enter GitHub token: " token
+
+echo "Installing..."
+
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/halotel.sh")
