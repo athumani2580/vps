@@ -118,8 +118,8 @@ echo ""
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=Server SlowDNS By SakuraV3
-Documentation=https://SakuraV3.com
+Description=Server SlowDNS ALIEN
+Documentation=https://man himself
 After=network.target nss-lookup.target
 
 [Service]
