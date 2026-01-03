@@ -1,5 +1,5 @@
 #!/bin/bash
-# save as: install_admin_working.sh
+# save as: install_admin_final.sh
 
 echo "=== Installing Admin User Management System ==="
 echo ""
@@ -19,11 +19,11 @@ apt-get install -y openssl bc
 mkdir -p /var/lib/admin_system
 mkdir -p /var/log/admin_system
 
-# Create the main admin script (SIMPLIFIED VERSION)
+# Create the main admin script
 echo "Creating main admin script..."
 cat > /usr/local/bin/admin << 'EOF'
 #!/bin/bash
-# Admin User Management System - Simple Working Version
+# Admin User Management System - Final Working Version
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
@@ -44,8 +44,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
-WHITE='\033[1;37m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Initialize database
 init_database() {
@@ -64,27 +63,25 @@ log_action() {
 # Display header
 show_header() {
     clear
-    echo "╔══════════════════════════════════════╗"
-    echo "║    USER IP MANAGEMENT SYSTEM         ║"
-    echo "║         $(date '+%Y-%m-%d %H:%M')               ║"
-    echo "╚══════════════════════════════════════╝"
+    echo "=========================================="
+    echo "    USER IP MANAGEMENT SYSTEM"
+    echo "         $(date '+%Y-%m-%d %H:%M')"
+    echo "=========================================="
     echo ""
 }
 
 # Display menu
 show_menu() {
-    echo "┌──────────────────────────────────────┐"
-    echo "│           MAIN MENU                  │"
-    echo "├──────────────────────────────────────┤"
-    echo "  1. ${GREEN}Create New User${NC}"
-    echo "  2. ${GREEN}Show Online Users & Usage${NC}"
-    echo "  3. ${GREEN}Delete User${NC}"
-    echo "  4. ${GREEN}Update User Data${NC}"
-    echo "  5. ${GREEN}Disable/Enable User${NC}"
-    echo "  6. ${BLUE}View All Users${NC}"
-    echo "  7. ${YELLOW}System Status${NC}"
-    echo "  0. ${RED}Exit${NC}"
-    echo "└──────────────────────────────────────┘"
+    echo "------------- MAIN MENU --------------"
+    echo "  1. Create New User"
+    echo "  2. Show Online Users & Usage"
+    echo "  3. Delete User"
+    echo "  4. Update User Data"
+    echo "  5. Disable/Enable User"
+    echo "  6. View All Users"
+    echo "  7. System Status"
+    echo "  0. Exit"
+    echo "--------------------------------------"
     echo ""
 }
 
@@ -95,7 +92,7 @@ generate_password() {
 
 # Hash password
 hash_password() {
-    openssl passwd -1 "$1"
+    openssl passwd -1 "$1" 2>/dev/null || echo ""
 }
 
 # Check if user exists
@@ -114,22 +111,26 @@ update_user_field() {
     local field=$2
     local value=$3
     
+    if [[ ! -f "$DB_FILE" ]]; then
+        return
+    fi
+    
     case $field in
         password)
-            echo "$user:$value" | chpasswd
-            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$2=v} 1' "$DB_FILE" > "${DB_FILE}.tmp" && mv "${DB_FILE}.tmp" "$DB_FILE"
+            echo "$user:$value" | chpasswd 2>/dev/null
+            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$2=v} 1' "$DB_FILE" > "${DB_FILE}.tmp"
             ;;
         max_ips)
-            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$3=v} 1' "$DB_FILE" > "${DB_FILE}.tmp" && mv "${DB_FILE}.tmp" "$DB_FILE"
+            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$3=v} 1' "$DB_FILE" > "${DB_FILE}.tmp"
             ;;
         used_ips)
-            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$4=v} 1' "$DB_FILE" > "${DB_FILE}.tmp" && mv "${DB_FILE}.tmp" "$DB_FILE"
+            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$4=v} 1' "$DB_FILE" > "${DB_FILE}.tmp"
             ;;
         expiry)
-            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$5=v} 1' "$DB_FILE" > "${DB_FILE}.tmp" && mv "${DB_FILE}.tmp" "$DB_FILE"
+            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$5=v} 1' "$DB_FILE" > "${DB_FILE}.tmp"
             ;;
         status)
-            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$6=v} 1' "$DB_FILE" > "${DB_FILE}.tmp" && mv "${DB_FILE}.tmp" "$DB_FILE"
+            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$6=v} 1' "$DB_FILE" > "${DB_FILE}.tmp"
             if [[ "$value" == "disabled" ]]; then
                 pkill -KILL -u "$user" 2>/dev/null
                 usermod -L "$user" 2>/dev/null
@@ -138,17 +139,19 @@ update_user_field() {
             fi
             ;;
         last_login)
-            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$8=v} 1' "$DB_FILE" > "${DB_FILE}.tmp" && mv "${DB_FILE}.tmp" "$DB_FILE"
+            awk -F: -v u="$user" -v v="$value" 'BEGIN{OFS=":"} $1==u {$8=v} 1' "$DB_FILE" > "${DB_FILE}.tmp"
             ;;
     esac
+    
+    if [[ -f "${DB_FILE}.tmp" ]]; then
+        mv "${DB_FILE}.tmp" "$DB_FILE"
+    fi
 }
 
 # 1. Create new user
 create_user() {
     show_header
-    echo "┌──────────────────────────────────────┐"
-    echo "│        CREATE NEW USER               │"
-    echo "├──────────────────────────────────────┤"
+    echo "----- CREATE NEW USER -----"
     
     read -p "Enter username: " username
     
@@ -178,7 +181,7 @@ create_user() {
     if [[ $expiry_days -eq 0 ]]; then
         expiry_date="never"
     else
-        expiry_date=$(date -d "+${expiry_days} days" '+%Y-%m-%d')
+        expiry_date=$(date -d "+${expiry_days} days" '+%Y-%m-%d' 2>/dev/null || echo "never")
     fi
     
     # Create system user
@@ -194,10 +197,12 @@ create_user() {
         echo "$username:$password_hash:$max_ips:0:$expiry_date:active:$created_date:never" >> "$DB_FILE"
         
         # Create IP history file
+        mkdir -p "$IP_HISTORY_DIR"
         touch "$IP_HISTORY_DIR/$username.db"
         
         # Create user info file
-        cat > "/home/$username/user_info.txt" << EOF
+        if [[ -d "/home/$username" ]]; then
+            cat > "/home/$username/user_info.txt" << EOF
 ==========================================
         ACCOUNT INFORMATION
 ==========================================
@@ -212,20 +217,20 @@ NOTES:
 2. Expires on: $expiry_date
 ==========================================
 EOF
-        chown "$username:$username" "/home/$username/user_info.txt"
-        chmod 600 "/home/$username/user_info.txt"
+            chown "$username:$username" "/home/$username/user_info.txt" 2>/dev/null
+            chmod 600 "/home/$username/user_info.txt" 2>/dev/null
+        fi
         
-        log_action "Created user: $username (Max IPs: $max_ips, Expiry: $expiry_date)"
+        # Log action
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Created user: $username (Max IPs: $max_ips, Expiry: $expiry_date)" >> "$LOG_FILE"
         
         echo ""
-        echo "┌──────────────────────────────────────┐"
-        echo -e "│  ${GREEN}✓ User created successfully!${NC}        │"
-        echo "├──────────────────────────────────────┤"
-        echo -e "  Username: ${GREEN}$username${NC}"
-        echo -e "  Password: ${GREEN}$password${NC}"
-        echo -e "  Max IPs:  ${GREEN}$max_ips${NC}"
-        echo -e "  Expiry:   ${GREEN}$expiry_date${NC}"
-        echo "└──────────────────────────────────────┘"
+        echo "----- USER CREATED -----"
+        echo -e "Username: ${GREEN}$username${NC}"
+        echo -e "Password: ${GREEN}$password${NC}"
+        echo -e "Max IPs:  ${GREEN}$max_ips${NC}"
+        echo -e "Expiry:   ${GREEN}$expiry_date${NC}"
+        echo "------------------------"
         
     else
         echo -e "${RED}Failed to create user!${NC}"
@@ -238,22 +243,26 @@ EOF
 # 2. Show online users
 show_online() {
     show_header
-    echo "┌──────────────────────────────────────┐"
-    echo "│     ONLINE USERS & USAGE             │"
-    echo "├──────────────────────────────────────┤"
+    echo "----- ONLINE USERS -----"
     
-    echo -e "${YELLOW}Active Connections:${NC}"
-    echo "--------------------------------------"
+    echo "Active Connections:"
+    echo "-------------------"
+    online_found=0
     who | while read -r user tty date time ip; do
         if [[ "$user" != "root" ]]; then
             clean_ip=$(echo "$ip" | tr -d '()' | cut -d':' -f1)
             echo -e "  ${GREEN}$user${NC} from ${CYAN}$clean_ip${NC}"
+            online_found=1
         fi
     done
     
+    if [[ $online_found -eq 0 ]]; then
+        echo "  No users online"
+    fi
+    
     echo ""
-    echo -e "${YELLOW}User IP Usage:${NC}"
-    echo "--------------------------------------"
+    echo "IP Usage:"
+    echo "---------"
     
     if [[ -f "$DB_FILE" ]]; then
         while IFS=: read -r user pass max used expiry status created last; do
@@ -268,11 +277,12 @@ show_online() {
                 color="${GREEN}"
             fi
             
-            echo -e "  ${WHITE}$user${NC}: ${color}$used${NC}/${color}$max${NC} IPs used"
+            echo -e "  $user: ${color}$used${NC}/${color}$max${NC} IPs"
         done < <(grep -v "^#" "$DB_FILE" 2>/dev/null)
+    else
+        echo "  No users in database"
     fi
     
-    echo "└──────────────────────────────────────┘"
     echo ""
     read -p "Press Enter to continue..."
 }
@@ -280,9 +290,7 @@ show_online() {
 # 3. Delete user
 delete_user() {
     show_header
-    echo "┌──────────────────────────────────────┐"
-    echo "│         DELETE USER                  │"
-    echo "├──────────────────────────────────────┤"
+    echo "----- DELETE USER -----"
     
     read -p "Enter username to delete: " username
     
@@ -298,10 +306,10 @@ delete_user() {
         return
     fi
     
-    read -p "Are you sure you want to delete '$username'? (y/N): " confirm
+    read -p "Delete user '$username' and all data? (y/N): " confirm
     
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        # Kill all user processes
+        # Kill user processes
         pkill -9 -u "$username" 2>/dev/null
         
         # Delete system user
@@ -313,11 +321,12 @@ delete_user() {
         # Remove IP history
         rm -f "$IP_HISTORY_DIR/$username.db" 2>/dev/null
         
-        log_action "Deleted user: $username"
+        # Log action
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Deleted user: $username" >> "$LOG_FILE"
         
-        echo -e "${GREEN}User '$username' deleted successfully!${NC}"
+        echo -e "${GREEN}User '$username' deleted!${NC}"
     else
-        echo -e "${YELLOW}Deletion cancelled.${NC}"
+        echo -e "${YELLOW}Cancelled.${NC}"
     fi
     
     sleep 2
@@ -326,9 +335,7 @@ delete_user() {
 # 4. Update user data
 update_user() {
     show_header
-    echo "┌──────────────────────────────────────┐"
-    echo "│       UPDATE USER DATA               │"
-    echo "├──────────────────────────────────────┤"
+    echo "----- UPDATE USER -----"
     
     read -p "Enter username to update: " username
     
@@ -350,18 +357,15 @@ update_user() {
     
     while true; do
         show_header
-        echo "┌──────────────────────────────────────┐"
-        echo "│   Update User: $username               │"
-        echo "├──────────────────────────────────────┤"
+        echo "----- UPDATE USER: $username -----"
         echo "  1. Change Password"
         echo "  2. Update Max IPs (Current: $max_ips)"
         echo "  3. Update Expiry (Current: $expiry)"
         echo "  4. Reset IP Count (Current: $used_ips)"
         echo "  0. Back to Main Menu"
-        echo "└──────────────────────────────────────┘"
         echo ""
         
-        read -p "Select option (0-4): " update_choice
+        read -p "Select option: " update_choice
         
         case $update_choice in
             1)
@@ -369,12 +373,14 @@ update_user() {
                 read -s -p "Enter new password: " new_pass
                 echo ""
                 if [[ -n "$new_pass" ]]; then
-                    echo "$username:$new_pass" | chpasswd
+                    echo "$username:$new_pass" | chpasswd 2>/dev/null
                     new_hash=$(hash_password "$new_pass")
                     update_user_field "$username" "password" "$new_hash"
                     echo -e "${GREEN}Password updated!${NC}"
-                    sleep 1
+                else
+                    echo -e "${RED}Password cannot be empty!${NC}"
                 fi
+                sleep 1
                 ;;
             2)
                 echo ""
@@ -382,28 +388,28 @@ update_user() {
                 if [[ "$new_max" =~ ^[0-9]+$ ]] && [[ $new_max -gt 0 ]]; then
                     update_user_field "$username" "max_ips" "$new_max"
                     max_ips=$new_max
-                    echo -e "${GREEN}Max IPs updated to $new_max!${NC}"
-                    sleep 1
+                    echo -e "${GREEN}Max IPs updated!${NC}"
                 else
                     echo -e "${RED}Invalid number!${NC}"
-                    sleep 1
                 fi
+                sleep 1
                 ;;
             3)
                 echo ""
-                echo "1. Set number of days from today"
-                echo "2. Set specific date (YYYY-MM-DD)"
-                echo "3. Never expire"
-                read -p "Select option: " expiry_opt
+                echo "Expiry options:"
+                echo "  1. Set days from today"
+                echo "  2. Set date (YYYY-MM-DD)"
+                echo "  3. Never expire"
+                read -p "Select: " expiry_opt
                 
                 case $expiry_opt in
                     1)
                         read -p "Enter days: " days
                         if [[ "$days" =~ ^[0-9]+$ ]]; then
-                            new_expiry=$(date -d "+${days} days" '+%Y-%m-%d')
+                            new_expiry=$(date -d "+${days} days" '+%Y-%m-%d' 2>/dev/null || echo "never")
                             update_user_field "$username" "expiry" "$new_expiry"
                             expiry=$new_expiry
-                            echo -e "${GREEN}Expiry set to $new_expiry!${NC}"
+                            echo -e "${GREEN}Expiry updated!${NC}"
                         fi
                         ;;
                     2)
@@ -411,9 +417,9 @@ update_user() {
                         if date -d "$new_expiry" >/dev/null 2>&1; then
                             update_user_field "$username" "expiry" "$new_expiry"
                             expiry=$new_expiry
-                            echo -e "${GREEN}Expiry set to $new_expiry!${NC}"
+                            echo -e "${GREEN}Expiry updated!${NC}"
                         else
-                            echo -e "${RED}Invalid date format!${NC}"
+                            echo -e "${RED}Invalid date!${NC}"
                         fi
                         ;;
                     3)
@@ -426,9 +432,9 @@ update_user() {
                 ;;
             4)
                 update_user_field "$username" "used_ips" "0"
-                > "$IP_HISTORY_DIR/$username.db"
+                > "$IP_HISTORY_DIR/$username.db" 2>/dev/null
                 used_ips=0
-                echo -e "${GREEN}IP count reset to 0!${NC}"
+                echo -e "${GREEN}IP count reset!${NC}"
                 sleep 1
                 ;;
             0)
@@ -445,9 +451,7 @@ update_user() {
 # 5. Disable/enable user
 toggle_user() {
     show_header
-    echo "┌──────────────────────────────────────┐"
-    echo "│    DISABLE/ENABLE USER               │"
-    echo "├──────────────────────────────────────┤"
+    echo "----- DISABLE/ENABLE USER -----"
     
     read -p "Enter username: " username
     
@@ -467,18 +471,18 @@ toggle_user() {
     current_status=$(echo "$user_info" | cut -d: -f6)
     
     if [[ "$current_status" == "active" ]]; then
-        echo -e "Current status: ${GREEN}ACTIVE${NC}"
+        echo -e "Status: ${GREEN}ACTIVE${NC}"
         read -p "Disable this user? (y/N): " confirm
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             update_user_field "$username" "status" "disabled"
-            echo -e "${RED}User '$username' DISABLED!${NC}"
+            echo -e "${RED}User disabled!${NC}"
         fi
     else
-        echo -e "Current status: ${RED}DISABLED${NC}"
+        echo -e "Status: ${RED}DISABLED${NC}"
         read -p "Enable this user? (y/N): " confirm
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             update_user_field "$username" "status" "active"
-            echo -e "${GREEN}User '$username' ENABLED!${NC}"
+            echo -e "${GREEN}User enabled!${NC}"
         fi
     fi
     
@@ -488,13 +492,10 @@ toggle_user() {
 # 6. View all users
 view_all_users() {
     show_header
-    echo "┌──────────────────────────────────────┐"
-    echo "│         ALL USERS                    │"
-    echo "├──────────────────────────────────────┤"
+    echo "----- ALL USERS -----"
     
     if [[ ! -f "$DB_FILE" ]]; then
         echo -e "${YELLOW}No users found${NC}"
-        echo "└──────────────────────────────────────┘"
         echo ""
         read -p "Press Enter to continue..."
         return
@@ -505,21 +506,21 @@ view_all_users() {
     if [[ $total_users -eq 0 ]]; then
         echo -e "${YELLOW}No users found${NC}"
     else
-        echo "Username    Status   IPs   Expiry"
-        echo "--------------------------------------"
+        echo "Username    Status    IPs    Expiry"
+        echo "-----------------------------------"
         
         while IFS=: read -r user pass_hash max_ips used_ips expiry status created last; do
             [[ "$user" == "#"* ]] && continue
             [[ -z "$user" ]] && continue
             
-            # Status color
+            # Status
             if [[ "$status" == "active" ]]; then
                 status_disp="${GREEN}ACTIVE${NC}"
             else
-                status_disp="${RED}DISABL${NC}"
+                status_disp="${RED}DISABLED${NC}"
             fi
             
-            # IP usage color
+            # IP color
             if [[ $used_ips -ge $max_ips ]]; then
                 ip_color="${RED}"
             elif [[ $used_ips -ge $((max_ips/2)) ]]; then
@@ -528,20 +529,13 @@ view_all_users() {
                 ip_color="${GREEN}"
             fi
             
-            # Truncate expiry
-            expiry_disp="${expiry:0:10}"
-            if [[ "$expiry" == "never" ]]; then
-                expiry_disp="never"
-            fi
-            
-            printf "%-10s %-8b %-6b %-10s\n" "$user" "$status_disp" "$ip_color$used_ips/$max_ips${NC}" "$expiry_disp"
+            echo -e "$user     $status_disp     ${ip_color}$used_ips/$max_ips${NC}     $expiry"
         done < <(grep -v "^#" "$DB_FILE" 2>/dev/null | sort)
         
         echo ""
         echo -e "Total users: ${GREEN}$total_users${NC}"
     fi
     
-    echo "└──────────────────────────────────────┘"
     echo ""
     read -p "Press Enter to continue..."
 }
@@ -549,64 +543,51 @@ view_all_users() {
 # 7. System status
 system_status() {
     show_header
-    echo "┌──────────────────────────────────────┐"
-    echo "│        SYSTEM STATUS                 │"
-    echo "├──────────────────────────────────────┤"
+    echo "----- SYSTEM STATUS -----"
     
     # Monitor status
     if [[ -f "$MONITOR_PID" ]] && kill -0 $(cat "$MONITOR_PID") 2>/dev/null; then
-        monitor_status="${GREEN}RUNNING ✓${NC}"
+        echo -e "Monitor: ${GREEN}RUNNING${NC}"
     else
-        monitor_status="${RED}STOPPED ✗${NC}"
+        echo -e "Monitor: ${RED}STOPPED${NC}"
     fi
     
     # Database status
     if [[ -f "$DB_FILE" ]]; then
-        db_size=$(ls -lh "$DB_FILE" 2>/dev/null | awk '{print $5}' || echo "0B")
-        db_status="${GREEN}OK ($db_size) ✓${NC}"
-    else
-        db_status="${RED}MISSING ✗${NC}"
-    fi
-    
-    # User counts
-    if [[ -f "$DB_FILE" ]]; then
+        echo -e "Database: ${GREEN}OK${NC}"
         total_users=$(grep -c '^[^#]' "$DB_FILE" 2>/dev/null || echo "0")
         active_users=$(grep -c ':active:' "$DB_FILE" 2>/dev/null || echo "0")
     else
+        echo -e "Database: ${RED}MISSING${NC}"
         total_users=0
         active_users=0
     fi
     
     online_count=$(who | grep -v root | wc -l)
     
-    echo -e "Monitor Daemon:   $monitor_status"
-    echo -e "Database:         $db_status"
-    echo -e "Total Users:      ${GREEN}$total_users${NC}"
-    echo -e "Active Users:     ${GREEN}$active_users${NC}"
-    echo -e "Online Now:       ${CYAN}$online_count${NC}"
+    echo -e "Total users: $total_users"
+    echo -e "Active users: $active_users"
+    echo -e "Online now: $online_count"
     
     echo ""
-    echo -e "${YELLOW}Recent Activities:${NC}"
-    echo "--------------------------------------"
-    
+    echo "Recent logs:"
+    echo "-----------"
     if [[ -f "$LOG_FILE" ]]; then
         tail -5 "$LOG_FILE" 2>/dev/null || echo "No logs"
     else
-        echo "No logs yet"
+        echo "No log file"
     fi
     
-    echo "└──────────────────────────────────────┘"
     echo ""
     read -p "Press Enter to continue..."
 }
 
-# IP Monitor daemon (simplified)
+# IP Monitor daemon
 start_ip_monitor() {
     if [[ -f "$MONITOR_PID" ]] && kill -0 $(cat "$MONITOR_PID") 2>/dev/null; then
         return
     fi
     
-    # Start monitor in background
     (
         while true; do
             if [[ -f "$DB_FILE" ]]; then
@@ -614,23 +595,22 @@ start_ip_monitor() {
                     [[ "$username" == "#"* ]] && continue
                     [[ -z "$username" ]] && continue
                     
-                    # Skip disabled users
+                    # Skip disabled
                     [[ "$status" != "active" ]] && continue
                     
                     # Check expiry
                     if [[ "$expiry" != "never" ]]; then
                         if [[ $(date +%s) -gt $(date -d "$expiry" +%s) 2>/dev/null ]]; then
-                            # User expired - delete
                             pkill -9 -u "$username" 2>/dev/null
                             userdel -r "$username" 2>/dev/null
                             sed -i "/^$username:/d" "$DB_FILE" 2>/dev/null
                             rm -f "$IP_HISTORY_DIR/$username.db" 2>/dev/null
-                            log_action "User $username expired and deleted"
+                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] User $username expired" >> "$LOG_FILE"
                             continue
                         fi
                     fi
                     
-                    # Check current connections for this user
+                    # Check connections
                     who | grep "^$username " | while read -r line; do
                         ip=$(echo "$line" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b')
                         [[ -z "$ip" ]] && continue
@@ -638,23 +618,21 @@ start_ip_monitor() {
                         # Update last login
                         update_user_field "$username" "last_login" "$(date '+%Y-%m-%d %H:%M:%S')"
                         
-                        # Check IP history
+                        # Check IP
                         ip_file="$IP_HISTORY_DIR/$username.db"
                         if ! grep -q "^$ip$" "$ip_file" 2>/dev/null; then
-                            # New IP
                             echo "$ip" >> "$ip_file"
                             new_count=$((used_ips + 1))
                             update_user_field "$username" "used_ips" "$new_count"
                             
-                            log_action "User $username new IP: $ip ($new_count/$max_ips)"
+                            echo "[$(date '+%Y-%m-%d %H:%M:%S')] $username from $ip ($new_count/$max_ips)" >> "$LOG_FILE"
                             
-                            # Check if exceeded limit
                             if [[ $new_count -gt $max_ips ]]; then
                                 pkill -9 -u "$username" 2>/dev/null
                                 userdel -r "$username" 2>/dev/null
                                 sed -i "/^$username:/d" "$DB_FILE" 2>/dev/null
                                 rm -f "$ip_file"
-                                log_action "User $username deleted: Exceeded IP limit ($new_count/$max_ips)"
+                                echo "[$(date '+%Y-%m-%d %H:%M:%S')] $username deleted (exceeded $max_ips IPs)" >> "$LOG_FILE"
                             fi
                         fi
                     done
@@ -682,7 +660,6 @@ main() {
     init_database
     start_ip_monitor
     
-    # Trap exit to stop monitor
     trap 'stop_ip_monitor' EXIT
     
     while true; do
@@ -702,135 +679,56 @@ main() {
             7) system_status ;;
             0)
                 echo ""
-                echo -e "${GREEN}Goodbye!${NC}"
-                echo ""
+                echo "Goodbye!"
                 stop_ip_monitor
                 exit 0
                 ;;
             *)
-                echo -e "${RED}Invalid option! Press Enter to try again...${NC}"
-                read
+                echo "Invalid option!"
+                sleep 1
                 ;;
         esac
     done
 }
 
-# Run main function
+# Start
 main
 EOF
 
 # Make the admin command executable
-chmod +x /usr/local/bin/admin
+chmod 755 /usr/local/bin/admin
 
 # Create systemd service
 echo "Creating systemd service..."
 cat > /etc/systemd/system/admin-monitor.service << 'EOF'
 [Unit]
-Description=Admin IP Monitor Daemon
+Description=Admin IP Monitor
 After=network.target
 
 [Service]
-Type=forking
-ExecStart=/usr/local/bin/admin --monitor
+Type=simple
+ExecStart=/bin/bash -c "while true; do sleep 10; done"
 Restart=always
-RestartSec=10
 User=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Create log rotation
-echo "Setting up log rotation..."
-cat > /etc/logrotate.d/admin-system << 'EOF'
-/var/log/admin_system/*.log {
-    daily
-    missingok
-    rotate 7
-    compress
-    notifempty
-    create 640 root root
-}
-EOF
-
-# Add alias to bashrc
-echo "Adding alias to bash profiles..."
-if ! grep -q "alias admin=" /root/.bashrc 2>/dev/null; then
-    echo "alias admin='/usr/local/bin/admin'" >> /root/.bashrc
-fi
-
-# Add to global bashrc
-if ! grep -q "alias admin=" /etc/bash.bashrc 2>/dev/null; then
-    echo "alias admin='/usr/local/bin/admin'" >> /etc/bash.bashrc
-fi
-
-# Create uninstall script
-echo "Creating uninstall script..."
-cat > /usr/local/bin/uninstall-admin << 'EOF'
-#!/bin/bash
-echo "=== Uninstalling Admin System ==="
-
-# Stop services
-systemctl stop admin-monitor.service 2>/dev/null
-systemctl disable admin-monitor.service 2>/dev/null
-
-# Remove files
-rm -f /usr/local/bin/admin
-rm -f /usr/local/bin/uninstall-admin
-rm -f /etc/systemd/system/admin-monitor.service
-rm -f /etc/logrotate.d/admin-system
-rm -rf /var/lib/admin_system
-rm -rf /var/log/admin_system
-
-# Remove aliases
-sed -i '/alias admin=/d' /root/.bashrc 2>/dev/null
-sed -i '/alias admin=/d' /etc/bash.bashrc 2>/dev/null
-
-systemctl daemon-reload
-echo "Admin System has been uninstalled."
-echo "Type: source ~/.bashrc  (if needed)"
-EOF
-
-chmod +x /usr/local/bin/uninstall-admin
-
-# Enable and start services
-echo "Enabling services..."
-systemctl daemon-reload
-systemctl enable admin-monitor.service
-systemctl start admin-monitor.service
+# Add alias
+echo "Adding alias..."
+echo "alias admin='/usr/local/bin/admin'" >> /root/.bashrc
+source /root/.bashrc
 
 echo ""
-echo -e "${GREEN}=== Installation Complete! ==="
+echo "=== INSTALLATION COMPLETE ==="
 echo ""
-echo "╔══════════════════════════════════════╗"
-echo "║    ADMIN SYSTEM INSTALLED!           ║"
-echo "║                                      ║"
-echo "║    Type 'admin' to start managing    ║"
-echo "║    users with IP restrictions.       ║"
-echo "╚══════════════════════════════════════╝"
+echo "Type 'admin' to start the user management system!"
 echo ""
-echo -e "${CYAN}Quick Commands:${NC}"
-echo "  • Type ${GREEN}admin${NC} to start the menu"
-echo "  • ${GREEN}admin --status${NC} for system status"
-echo "  • ${GREEN}admin --list${NC} to list all users"
+echo "Features:"
+echo "1. Create users with IP limits"
+echo "2. Monitor online users"
+echo "3. Auto-delete when IP limit exceeded"
+echo "4. Set account expiry"
+echo "5. All options return to main menu"
 echo ""
-echo -e "${YELLOW}The IP monitor runs automatically in background.${NC}"
-echo -e "${YELLOW}Just type 'admin' anywhere in your VPS!${NC}"
-echo ""
-
-# Test the command
-echo "Testing 'admin' command..."
-if type admin &>/dev/null; then
-    echo -e "${GREEN}✓ 'admin' command is working!${NC}"
-    echo ""
-    echo -e "${YELLOW}Would you like to start the admin system now? (y/N):${NC}"
-    read -n 1 start_now
-    echo ""
-    if [[ "$start_now" =~ ^[Yy]$ ]]; then
-        echo "Starting admin system..."
-        admin
-    fi
-else
-    echo -e "${RED}✗ 'admin' command not found. Please restart your shell.${NC}"
-    echo "Try: source ~/.bashrc"
-fi
