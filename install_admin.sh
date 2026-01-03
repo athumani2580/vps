@@ -1,6 +1,5 @@
 #!/bin/bash
-# save as: install_admin_fixed.sh
-# Fixed version with proper EOF delimiters
+# save as: install_admin_final_fixed.sh
 
 echo "=== Installing Admin User Management System ==="
 echo ""
@@ -599,9 +598,9 @@ start_ip_monitor() {
                     # Skip disabled
                     [[ "$status" != "active" ]] && continue
                     
-                    # Check expiry
+                    # Check expiry - FIXED LINE BELOW
                     if [[ "$expiry" != "never" ]]; then
-                        if [[ $(date +%s) -gt $(date -d "$expiry" +%s) 2>/dev/null ]]; then
+                        if [[ $(date +%s) -gt $(date -d "$expiry" +%s 2>/dev/null) ]]; then
                             pkill -9 -u "$username" 2>/dev/null
                             userdel -r "$username" 2>/dev/null
                             sed -i "/^$username:/d" "$DB_FILE" 2>/dev/null
