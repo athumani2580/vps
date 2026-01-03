@@ -1,5 +1,5 @@
 #!/bin/bash
-# save as: install_admin_system.sh
+# save as: install_admin_system_fixed.sh
 
 echo "=== Installing Admin User Management System ==="
 echo ""
@@ -37,7 +37,6 @@ DB_FILE="/var/lib/admin_system/users.db"
 IP_HISTORY_DIR="/var/lib/admin_system/ip_history"
 LOG_FILE="/var/log/admin_system/actions.log"
 MONITOR_PID="/var/run/admin_monitor.pid"
-CONFIG_FILE="/etc/admin_system.conf"
 
 # Colors for beautiful interface
 RED='\033[0;31m'
@@ -69,7 +68,6 @@ init_database() {
         echo "# username:password_hash:max_ips:used_ips:expiry_date:status:created:last_login" > "$DB_FILE"
         mkdir -p "$IP_HISTORY_DIR"
         chmod 600 "$DB_FILE"
-        echo "Database initialized."
     fi
 }
 
@@ -87,18 +85,18 @@ show_header() {
     # Calculate padding for date
     date_pad=$((width - ${#date_str} - 2))
     
-    echo -e "${PURPLE}${BOX_TOP_L}$(printf '%*s' $width | tr ' ' ${BOX_HORIZ})${BOX_TOP_R}${NC}"
+    echo -e "${PURPLE}${BOX_TOP_L}$(printf '%0.s${BOX_HORIZ}' $(seq 1 $width))${BOX_TOP_R}${NC}"
     echo -e "${PURPLE}${BOX_VERT}    USER IP MANAGEMENT SYSTEM         ${BOX_VERT}${NC}"
-    echo -e "${PURPLE}${BOX_VERT}         ${date_str}$(printf '%*s' $date_pad ' ')${BOX_VERT}${NC}"
-    echo -e "${PURPLE}${BOX_BOTTOM_L}$(printf '%*s' $width | tr ' ' ${BOX_HORIZ})${BOX_BOTTOM_R}${NC}"
+    echo -e "${PURPLE}${BOX_VERT}         ${date_str}$(printf '%0.s ' $(seq 1 $date_pad))${BOX_VERT}${NC}"
+    echo -e "${PURPLE}${BOX_BOTTOM_L}$(printf '%0.s${BOX_HORIZ}' $(seq 1 $width))${BOX_BOTTOM_R}${NC}"
     echo ""
 }
 
 # Display menu
 show_menu() {
-    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_TOP_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_TOP_R}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}           MAIN MENU                  ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_VERT}${NC}"
+    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_VERT}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}  ${GREEN}1.${NC} Create New User               ${BOX_MENU_VERT}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}  ${GREEN}2.${NC} Show Online Users & Usage     ${BOX_MENU_VERT}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}  ${GREEN}3.${NC} Delete User                   ${BOX_MENU_VERT}${NC}"
@@ -107,7 +105,7 @@ show_menu() {
     echo -e "${CYAN}${BOX_MENU_VERT}  ${BLUE}6.${NC} View All Users                ${BOX_MENU_VERT}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}  ${YELLOW}7.${NC} System Status                ${BOX_MENU_VERT}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}  ${RED}0.${NC} Exit                         ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_BOTTOM_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_BOTTOM_R}${NC}"
     echo ""
 }
 
@@ -172,11 +170,12 @@ update_user_field() {
 create_user() {
     while true; do
         show_header
-        echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_TOP_R}${NC}"
+        echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_TOP_R}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}        CREATE NEW USER             ${BOX_MENU_VERT}${NC}"
-        echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_VERT}${NC}"
+        echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_VERT}${NC}"
         
-        read -p "$(echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Enter username: ${NC}")" username
+        echo -ne "${CYAN}${BOX_MENU_VERT}  ${WHITE}Enter username: ${NC}"
+        read username
         echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
         
         if [[ -z "$username" ]]; then
@@ -202,7 +201,8 @@ create_user() {
     
     # Get IP limit
     while true; do
-        read -p "$(echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Max IPs allowed (default: 2): ${NC}")" max_ips
+        echo -ne "${CYAN}${BOX_MENU_VERT}  ${WHITE}Max IPs allowed (default: 2): ${NC}"
+        read max_ips
         max_ips=${max_ips:-2}
         
         if [[ "$max_ips" =~ ^[0-9]+$ ]] && [[ $max_ips -gt 0 ]]; then
@@ -214,7 +214,8 @@ create_user() {
     
     # Get expiry days
     while true; do
-        read -p "$(echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Expiry days (0=never): ${NC}")" expiry_days
+        echo -ne "${CYAN}${BOX_MENU_VERT}  ${WHITE}Expiry days (0=never): ${NC}"
+        read expiry_days
         expiry_days=${expiry_days:-30}
         
         if [[ "$expiry_days" =~ ^[0-9]+$ ]]; then
@@ -233,7 +234,7 @@ create_user() {
     # Create system user
     if useradd -m -s /bin/bash "$username" 2>/dev/null; then
         echo "$username:$password" | chpasswd
-        chage -d 0 "$username"  # Force password change on first login
+        chage -d 0 "$username" 2>/dev/null  # Force password change on first login
         
         # Add to database
         created_date=$(date '+%Y-%m-%d %H:%M:%S')
@@ -271,12 +272,12 @@ EOF
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Max IPs: ${GREEN}$max_ips                ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Expiry: ${GREEN}$expiry_date      ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
-        echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_BOTTOM_R}${NC}"
+        echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_BOTTOM_R}${NC}"
         
     else
         echo -e "${CYAN}${BOX_MENU_VERT}  ${RED}✗ Failed to create user!         ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
-        echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_BOTTOM_R}${NC}"
+        echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_BOTTOM_R}${NC}"
     fi
     
     echo ""
@@ -286,9 +287,9 @@ EOF
 # Show online users
 show_online() {
     show_header
-    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_TOP_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_TOP_R}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}     ONLINE USERS & USAGE           ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_VERT}${NC}"
+    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_VERT}${NC}"
     
     # Get online users
     online_users=$(who | grep -v root | awk '{print $1}' | sort | uniq)
@@ -305,28 +306,30 @@ show_online() {
         done
     fi
     
-    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_VERT}${NC}"
+    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_VERT}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}User IP Usage:                   ${BOX_MENU_VERT}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}══════════════════════════════  ${BOX_MENU_VERT}${NC}"
     
     # Show IP usage from database
-    while IFS=: read -r user pass max used expiry status created last; do
-        [[ "$user" == "#"* ]] && continue
-        [[ -z "$user" ]] && continue
-        
-        if [[ $used -ge $max ]]; then
-            color="${RED}"
-        elif [[ $used -ge $((max/2)) ]]; then
-            color="${YELLOW}"
-        else
-            color="${GREEN}"
-        fi
-        
-        echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}$(printf '%-14s' "$user")${color}$(printf '%-4s' "$used")${WHITE}/${color}$max IPs     ${BOX_MENU_VERT}${NC}"
-    done < <(grep -v "^#" "$DB_FILE" 2>/dev/null || true)
+    if [[ -f "$DB_FILE" ]]; then
+        while IFS=: read -r user pass max used expiry status created last; do
+            [[ "$user" == "#"* ]] && continue
+            [[ -z "$user" ]] && continue
+            
+            if [[ $used -ge $max ]]; then
+                color="${RED}"
+            elif [[ $used -ge $((max/2)) ]]; then
+                color="${YELLOW}"
+            else
+                color="${GREEN}"
+            fi
+            
+            echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}$(printf '%-14s' "$user")${color}$(printf '%-4s' "$used")${WHITE}/${color}$max IPs     ${BOX_MENU_VERT}${NC}"
+        done < <(grep -v "^#" "$DB_FILE" 2>/dev/null || true)
+    fi
     
     echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_BOTTOM_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_BOTTOM_R}${NC}"
     
     echo ""
     read -p "Press Enter to continue..."
@@ -335,11 +338,12 @@ show_online() {
 # Delete user
 delete_user() {
     show_header
-    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_TOP_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_TOP_R}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}         DELETE USER                ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_VERT}${NC}"
+    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_VERT}${NC}"
     
-    read -p "$(echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Enter username to delete: ${NC}")" username
+    echo -ne "${CYAN}${BOX_MENU_VERT}  ${WHITE}Enter username to delete: ${NC}"
+    read username
     
     if [[ -z "$username" ]]; then
         echo -e "${CYAN}${BOX_MENU_VERT}  ${RED}Username cannot be empty!      ${BOX_MENU_VERT}${NC}"
@@ -356,7 +360,8 @@ delete_user() {
     fi
     
     echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
-    read -p "$(echo -e "${CYAN}${BOX_MENU_VERT}  ${RED}Delete user '$username'? (y/N): ${NC}")" confirm
+    echo -ne "${CYAN}${BOX_MENU_VERT}  ${RED}Delete user '$username'? (y/N): ${NC}"
+    read confirm
     
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         # Kill all user processes
@@ -379,7 +384,7 @@ delete_user() {
     fi
     
     echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_BOTTOM_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_BOTTOM_R}${NC}"
     
     sleep 2
 }
@@ -387,11 +392,12 @@ delete_user() {
 # Update user data
 update_user() {
     show_header
-    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_TOP_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_TOP_R}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}       UPDATE USER DATA             ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_VERT}${NC}"
+    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_VERT}${NC}"
     
-    read -p "$(echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Enter username to update: ${NC}")" username
+    echo -ne "${CYAN}${BOX_MENU_VERT}  ${WHITE}Enter username to update: ${NC}"
+    read username
     
     if [[ -z "$username" ]]; then
         echo -e "${CYAN}${BOX_MENU_VERT}  ${RED}Username cannot be empty!      ${BOX_MENU_VERT}${NC}"
@@ -413,16 +419,16 @@ update_user() {
     
     while true; do
         show_header
-        echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_TOP_R}${NC}"
+        echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_TOP_R}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}   Update User: ${WHITE}$(printf '%-21s' "$username")${CYAN}${BOX_MENU_VERT}${NC}"
-        echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_VERT}${NC}"
+        echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}1. Change Password               ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}2. Update Max IPs (Current: ${GREEN}$max_ips${WHITE})  ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}3. Update Expiry (Current: ${GREEN}$expiry${WHITE}) ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}4. Reset IP Count (Current: ${GREEN}$used_ips${WHITE}) ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}0. Back to Main Menu             ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
-        echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_BOTTOM_R}${NC}"
+        echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_BOTTOM_R}${NC}"
         echo ""
         
         read -p "Select option (0-4): " update_choice
@@ -509,11 +515,12 @@ update_user() {
 # Disable/enable user
 toggle_user() {
     show_header
-    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_TOP_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_TOP_R}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}    DISABLE/ENABLE USER            ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_VERT}${NC}"
+    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_VERT}${NC}"
     
-    read -p "$(echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Enter username: ${NC}")" username
+    echo -ne "${CYAN}${BOX_MENU_VERT}  ${WHITE}Enter username: ${NC}"
+    read username
     
     if [[ -z "$username" ]]; then
         echo -e "${CYAN}${BOX_MENU_VERT}  ${RED}Username cannot be empty!      ${BOX_MENU_VERT}${NC}"
@@ -536,14 +543,16 @@ toggle_user() {
     
     if [[ "$current_status" == "active" ]]; then
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Current status: ${GREEN}ACTIVE          ${BOX_MENU_VERT}${NC}"
-        read -p "$(echo -e "${CYAN}${BOX_MENU_VERT}  ${RED}Disable this user? (y/N): ${NC}")" confirm
+        echo -ne "${CYAN}${BOX_MENU_VERT}  ${RED}Disable this user? (y/N): ${NC}"
+        read confirm
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             update_user_field "$username" "status" "disabled"
             echo -e "${CYAN}${BOX_MENU_VERT}  ${RED}✓ User '$username' DISABLED!     ${BOX_MENU_VERT}${NC}"
         fi
     else
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Current status: ${RED}DISABLED        ${BOX_MENU_VERT}${NC}"
-        read -p "$(echo -e "${CYAN}${BOX_MENU_VERT}  ${GREEN}Enable this user? (y/N): ${NC}")" confirm
+        echo -ne "${CYAN}${BOX_MENU_VERT}  ${GREEN}Enable this user? (y/N): ${NC}"
+        read confirm
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             update_user_field "$username" "status" "active"
             echo -e "${CYAN}${BOX_MENU_VERT}  ${GREEN}✓ User '$username' ENABLED!      ${BOX_MENU_VERT}${NC}"
@@ -551,7 +560,7 @@ toggle_user() {
     fi
     
     echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_BOTTOM_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_BOTTOM_R}${NC}"
     
     sleep 2
 }
@@ -559,17 +568,21 @@ toggle_user() {
 # View all users
 view_all_users() {
     show_header
-    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_TOP_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_TOP_R}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}         ALL USERS                  ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_VERT}${NC}"
+    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_VERT}${NC}"
     
     # Count users
-    total_users=$(grep -c '^[^#]' "$DB_FILE" 2>/dev/null || echo "0")
+    if [[ ! -f "$DB_FILE" ]]; then
+        total_users=0
+    else
+        total_users=$(grep -c '^[^#]' "$DB_FILE" 2>/dev/null || echo "0")
+    fi
     
     if [[ $total_users -eq 0 ]]; then
         echo -e "${CYAN}${BOX_MENU_VERT}  ${YELLOW}No users found                  ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
-        echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_BOTTOM_R}${NC}"
+        echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_BOTTOM_R}${NC}"
     else
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}USER       STATUS   IPS   EXPIRY  ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}════════════════════════════════  ${BOX_MENU_VERT}${NC}"
@@ -606,7 +619,7 @@ view_all_users() {
         echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Total users: ${GREEN}$total_users                ${BOX_MENU_VERT}${NC}"
         echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
-        echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_BOTTOM_R}${NC}"
+        echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_BOTTOM_R}${NC}"
     fi
     
     echo ""
@@ -616,9 +629,9 @@ view_all_users() {
 # System status
 system_status() {
     show_header
-    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_TOP_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_TOP_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_TOP_R}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}        SYSTEM STATUS               ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_VERT}${NC}"
+    echo -e "${CYAN}${BOX_MENU_VERT}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_VERT}${NC}"
     
     # Monitor status
     if [[ -f "$MONITOR_PID" ]] && kill -0 $(cat "$MONITOR_PID") 2>/dev/null; then
@@ -636,12 +649,18 @@ system_status() {
     fi
     
     # User counts
-    total_users=$(grep -c '^[^#]' "$DB_FILE" 2>/dev/null || echo "0")
-    active_users=$(grep -c ':active:' "$DB_FILE" 2>/dev/null || echo "0")
+    if [[ -f "$DB_FILE" ]]; then
+        total_users=$(grep -c '^[^#]' "$DB_FILE" 2>/dev/null || echo "0")
+        active_users=$(grep -c ':active:' "$DB_FILE" 2>/dev/null || echo "0")
+    else
+        total_users=0
+        active_users=0
+    fi
+    
     online_count=$(who | grep -v root | wc -l)
     
     # Disk usage
-    disk_usage=$(df -h /home | tail -1 | awk '{print $5}' 2>/dev/null || echo "N/A")
+    disk_usage=$(df -h /home 2>/dev/null | tail -1 | awk '{print $5}' || echo "N/A")
     
     echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Monitor Daemon:   $monitor_status  ${BOX_MENU_VERT}${NC}"
     echo -e "${CYAN}${BOX_MENU_VERT}  ${WHITE}Database:         $db_status  ${BOX_MENU_VERT}${NC}"
@@ -671,7 +690,7 @@ system_status() {
     fi
     
     echo -e "${CYAN}${BOX_MENU_VERT}                                  ${BOX_MENU_VERT}${NC}"
-    echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%*s' 36 | tr ' ' ${BOX_MENU_HORIZ})${BOX_MENU_BOTTOM_R}${NC}"
+    echo -e "${CYAN}${BOX_MENU_BOTTOM_L}$(printf '%0.s${BOX_MENU_HORIZ}' $(seq 1 36))${BOX_MENU_BOTTOM_R}${NC}"
     
     echo ""
     read -p "Press Enter to continue..."
@@ -844,7 +863,7 @@ After=network.target multi-user.target
 
 [Service]
 Type=forking
-ExecStart=/bin/bash -c "/usr/local/bin/admin --monitor"
+ExecStart=/usr/local/bin/admin --monitor
 Restart=always
 RestartSec=10
 User=root
@@ -896,25 +915,6 @@ _admin_completion() {
 complete -F _admin_completion admin
 EOF
 
-# Create welcome message
-echo "Creating welcome message..."
-cat > /usr/local/share/admin_system/welcome.txt << 'EOF'
-╔══════════════════════════════════════╗
-║    ADMIN SYSTEM INSTALLED!           ║
-║                                      ║
-║    Type 'admin' to start managing    ║
-║    users with IP restrictions.       ║
-╚══════════════════════════════════════╝
-
-Features:
-• Create users with IP limits
-• Auto-delete when IP limit exceeded
-• Set account expiry dates
-• Monitor online users
-• Enable/disable accounts
-• Full user management
-EOF
-
 # Add alias to bashrc for all users
 echo "Adding alias to bash profiles..."
 for bash_file in /home/*/.bashrc /root/.bashrc; do
@@ -947,7 +947,6 @@ rm -f /etc/bash_completion.d/admin
 rm -f /etc/logrotate.d/admin-system
 rm -rf /var/lib/admin_system
 rm -rf /var/log/admin_system
-rm -rf /usr/local/share/admin_system
 
 # Remove aliases
 sed -i '/alias admin=/d' /root/.bashrc 2>/dev/null
@@ -972,7 +971,12 @@ systemctl start admin-monitor.service
 echo ""
 echo -e "${GREEN}=== Installation Complete! ==="
 echo ""
-cat /usr/local/share/admin_system/welcome.txt
+echo -e "${CYAN}╔══════════════════════════════════════╗"
+echo "║    ADMIN SYSTEM INSTALLED!           ║"
+echo "║                                      ║"
+echo "║    Type 'admin' to start managing    ║"
+echo "║    users with IP restrictions.       ║"
+echo "╚══════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${CYAN}Quick Commands:${NC}"
 echo "  • Type ${GREEN}admin${NC} to start the menu"
@@ -986,7 +990,7 @@ echo ""
 
 # Test the command
 echo "Testing 'admin' command..."
-if command -v admin &>/dev/null; then
+if type admin &>/dev/null; then
     echo -e "${GREEN}✓ 'admin' command is working!${NC}"
 else
     echo -e "${RED}✗ 'admin' command not found. Please restart your shell.${NC}"
