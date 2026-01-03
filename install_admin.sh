@@ -1,5 +1,6 @@
 #!/bin/bash
-# save as: install_admin_final.sh
+# save as: install_admin_fixed.sh
+# Fixed version with proper EOF delimiters
 
 echo "=== Installing Admin User Management System ==="
 echo ""
@@ -21,7 +22,7 @@ mkdir -p /var/log/admin_system
 
 # Create the main admin script
 echo "Creating main admin script..."
-cat > /usr/local/bin/admin << 'EOF'
+cat > /usr/local/bin/admin << 'ADMIN_EOF'
 #!/bin/bash
 # Admin User Management System - Final Working Version
 
@@ -202,7 +203,7 @@ create_user() {
         
         # Create user info file
         if [[ -d "/home/$username" ]]; then
-            cat > "/home/$username/user_info.txt" << EOF
+            cat > "/home/$username/user_info.txt" << USERINFO_EOF
 ==========================================
         ACCOUNT INFORMATION
 ==========================================
@@ -216,7 +217,7 @@ NOTES:
 1. Account auto-deletes if > $max_ips IPs used
 2. Expires on: $expiry_date
 ==========================================
-EOF
+USERINFO_EOF
             chown "$username:$username" "/home/$username/user_info.txt" 2>/dev/null
             chmod 600 "/home/$username/user_info.txt" 2>/dev/null
         fi
@@ -693,14 +694,14 @@ main() {
 
 # Start
 main
-EOF
+ADMIN_EOF
 
 # Make the admin command executable
 chmod 755 /usr/local/bin/admin
 
 # Create systemd service
 echo "Creating systemd service..."
-cat > /etc/systemd/system/admin-monitor.service << 'EOF'
+cat > /etc/systemd/system/admin-monitor.service << 'SYSTEMD_EOF'
 [Unit]
 Description=Admin IP Monitor
 After=network.target
@@ -713,7 +714,7 @@ User=root
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SYSTEMD_EOF
 
 # Add alias
 echo "Adding alias..."
