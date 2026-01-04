@@ -1,7 +1,7 @@
 TANZANIA SCRIPT CREATED BY ALIEN
 SLOWDNS OPENSSH
 
-apt-get update && apt-get install -y sudo && apt-get install curl && sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/full1.sh)"
+apt-get update && apt-get install -y sudo && apt-get install curl && sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/full.sh)"
 
 
 
