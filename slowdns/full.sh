@@ -266,6 +266,7 @@ echo ""
 echo "=================================================================="
 print_success "           OpenSSH SlowDNS Installation Completed!"
 echo "=================================================================="
+
 echo ""
 echo "🔐 DNS Installer - Token Required"
 echo ""
