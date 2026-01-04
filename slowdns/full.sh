@@ -199,7 +199,6 @@ pkill -9 systemd-resolved 2>/dev/null
 rm -f /etc/resolv.conf
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 1.1.1.1" >> /etc/resolv.conf
-echo "options edns0" >> /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
 
 systemctl enable systemd-resolved
