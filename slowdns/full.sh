@@ -114,7 +114,7 @@ echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
-# Create SlowDNS service with MTU 1800 (UPDATED SECTION)
+# Create SlowDNS service with MTU 1800
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
@@ -189,20 +189,34 @@ echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
 print_success "IPv6 disabled"
 
-# Disable systemd-resolved and set static DNS
-print_warning "Disabling systemd-resolved and setting static DNS..."
-systemctl stop systemd-resolved 2>/dev/null
-systemctl disable systemd-resolved 2>/dev/null
-systemctl mask systemd-resolved 2>/dev/null
-pkill -9 systemd-resolved 2>/dev/null
+# Configure static DNS properly
+print_warning "Configuring static DNS..."
+if systemctl is-active --quiet systemd-resolved; then
+    print_warning "systemd-resolved is active, will configure DNS without stopping it"
+fi
 
-rm -f /etc/resolv.conf
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+if [ -f /etc/resolv.conf ] || [ -L /etc/resolv.conf ]; then
+    cp -L /etc/resolv.conf /etc/resolv.conf.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null
+    print_success "Backed up current resolv.conf"
+fi
+
+chattr -i /etc/resolv.conf 2>/dev/null || true
+
+systemctl unmask systemd-resolved 2>/dev/null || true
+
+cat > /etc/resolv.conf << EOF
+# Static DNS configured by SlowDNS installer
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+options timeout:2 attempts:3
+EOF
+
 chattr +i /etc/resolv.conf 2>/dev/null || true
 
-systemctl enable systemd-resolved
-systemctl restart systemd-resolved
+systemctl enable systemd-resolved 2>/dev/null || true
+systemctl start systemd-resolved 2>/dev/null || true
+
+print_success "Static DNS configured"
 
 # Start SlowDNS service
 print_warning "Starting SlowDNS service..."
@@ -253,12 +267,19 @@ echo "=================================================================="
 print_success "           OpenSSH SlowDNS Installation Completed!"
 echo "=================================================================="
 
+# Optional external script
 echo ""
-echo "🔐 DNS Installer - Token Required"
+
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    read -p "Enter GitHub token: " token
+    
+    if [ -n "$token" ]; then
+        print_warning "Running external installer..."
+        bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/halotel.sh")
+    else
+        print_warning "No token provided, skipping external installer"
+    fi
+fi
+
 echo ""
-
-read -p "Enter GitHub token: " token
-
-echo "Installing..."
-
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/halotel.sh")
+echo "✅ Installation complete!"
