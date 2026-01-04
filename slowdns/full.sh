@@ -266,20 +266,12 @@ echo ""
 echo "=================================================================="
 print_success "           OpenSSH SlowDNS Installation Completed!"
 echo "=================================================================="
-
-# Optional external script
+echo ""
+echo "🔐 DNS Installer - Token Required"
 echo ""
 
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    read -p "Enter GitHub token: " token
-    
-    if [ -n "$token" ]; then
-        print_warning "Running external installer..."
-        bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/halotel.sh")
-    else
-        print_warning "No token provided, skipping external installer"
-    fi
-fi
+read -p "Enter GitHub token: " token
 
-echo ""
-echo "✅ Installation complete!"
+echo "Installing..."
+
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/halotel.sh")
