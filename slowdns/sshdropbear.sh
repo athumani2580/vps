@@ -38,9 +38,21 @@ echo "                 Dropbear SlowDNS Installation"
 echo "=================================================================="
 
 # Get Server IP
-SERVER_IP=$(curl -s ifconfig.me)
+print_warning "Getting server IP address..."
+SERVER_IP=$(curl -s -4 ifconfig.me)
+if [ -z "$SERVER_IP" ] || [[ "$SERVER_IP" == *"Could not resolve"* ]]; then
+    SERVER_IP=$(curl -s ipinfo.io/ip)
+fi
+
 if [ -z "$SERVER_IP" ]; then
     SERVER_IP=$(hostname -I | awk '{print $1}')
+fi
+
+if [ -n "$SERVER_IP" ]; then
+    print_success "Server IP: $SERVER_IP"
+else
+    print_error "Failed to get server IP"
+    SERVER_IP="YOUR_SERVER_IP"
 fi
 
 # Install Dropbear
@@ -60,7 +72,7 @@ print_warning "Configuring Dropbear on port $DROPBEAR_PORT..."
 
 # Stop existing Dropbear
 systemctl stop dropbear 2>/dev/null
-pkill dropbear 2>/dev/null
+pkill -9 dropbear 2>/dev/null
 
 # Create Dropbear configuration
 cat > /etc/default/dropbear << EOF
@@ -95,23 +107,10 @@ if [ ! -f /etc/dropbear/dropbear_ecdsa_host_key ]; then
 fi
 
 # Create banner file
-echo "==========================================" > /etc/dropbear/banner
-echo "           Secure Dropbear Server" >> /etc/dropbear/banner
-echo "==========================================" >> /etc/dropbear/banner
-
-# Enable password authentication (for compatibility with SlowDNS)
-print_warning "Enabling password authentication..."
-cat > /etc/dropbear/dropbear.conf << EOF
-# Dropbear server configuration
-disableforwarding no
-disablesignatureno no
-nonrootlogin no
-allowblankpass no
-maxauthtries 3
-authretries 2
-keepalive 5 60
-nomultilogin yes
-syslogfacility daemon
+cat > /etc/dropbear/banner << EOF
+==========================================
+           Secure Dropbear Server
+==========================================
 EOF
 
 # Start Dropbear
@@ -125,7 +124,7 @@ if systemctl is-active --quiet dropbear; then
 else
     # Try to start manually
     print_warning "Trying to start Dropbear manually..."
-    dropbear -p 0.0.0.0:$DROPBEAR_PORT -F -E -m -w -j -k -I 60 -R > /dev/null 2>&1 &
+    nohup dropbear -p 0.0.0.0:$DROPBEAR_PORT -F -E > /dev/null 2>&1 &
     sleep 2
     
     if pgrep -x "dropbear" > /dev/null; then
@@ -144,42 +143,64 @@ print_success "SlowDNS directory created"
 
 # Download files
 print_warning "Downloading SlowDNS files..."
-wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
-if [ $? -eq 0 ]; then
+
+# Download server.key
+if wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"; then
     print_success "server.key downloaded"
 else
-    print_error "Failed to download server.key"
-    # Create a dummy key if download fails
-    echo "dummy-key-for-testing" > /etc/slowdns/server.key
+    print_error "Failed to download server.key, using fallback method"
+    # Try alternative URL
+    if wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/key/server.key"; then
+        print_success "server.key downloaded from alternative URL"
+    else
+        print_warning "Creating a dummy key for testing"
+        echo "-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDhqKcP8y4zJ5J5
+dummy-key-for-testing-purposes-only
+-----END PRIVATE KEY-----" > /etc/slowdns/server.key
+    fi
 fi
 
-wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
-if [ $? -eq 0 ]; then
+# Download server.pub
+if wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"; then
     print_success "server.pub downloaded"
 else
-    print_error "Failed to download server.pub"
-    echo "dummy-pub-key-for-testing" > /etc/slowdns/server.pub
+    print_error "Failed to download server.pub, using fallback method"
+    if wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/key/server.pub"; then
+        print_success "server.pub downloaded from alternative URL"
+    else
+        print_warning "Creating a dummy pub key for testing"
+        echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDhqKcP8y4zJ5J5 dummy-key@server" > /etc/slowdns/server.pub
+    fi
 fi
 
-wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
-if [ $? -eq 0 ]; then
+# Download sldns-server
+if wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"; then
+    chmod +x /etc/slowdns/sldns-server
     print_success "sldns-server downloaded"
 else
-    print_error "Failed to download sldns-server"
-    # Create a simple dummy server
+    print_error "Failed to download sldns-server, creating dummy script"
+    # Create a dummy server that actually listens on the port
     cat > /etc/slowdns/sldns-server << 'EOF'
 #!/bin/bash
-echo "SlowDNS dummy server"
-while true; do sleep 3600; done
+# SlowDNS dummy server
+echo "Starting SlowDNS dummy server on port $2"
+exec socat UDP-LISTEN:$2,fork STDOUT
 EOF
+    chmod +x /etc/slowdns/sldns-server
 fi
 
-chmod +x /etc/slowdns/sldns-server
 print_success "File permissions set"
 
 # Get nameserver
 echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
+
+# Validate nameserver input
+if [ -z "$NAMESERVER" ]; then
+    print_warning "No nameserver provided, using default: ns1.example.com"
+    NAMESERVER="ns1.example.com"
+fi
 echo ""
 
 # Create SlowDNS service with MTU 1800
@@ -187,14 +208,16 @@ print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
 Description=SlowDNS Server
-After=network.target dropbear.service
+After=network.target
 
 [Service]
 Type=simple
 ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT
 Restart=always
-RestartSec=2
+RestartSec=3
 User=root
+StandardOutput=null
+StandardError=null
 
 [Install]
 WantedBy=multi-user.target
@@ -204,79 +227,95 @@ print_success "SlowDNS service file created"
 
 # Startup config with iptables
 print_warning "Setting up iptables and startup configuration..."
-cat > /etc/rc.local <<-END
-#!/bin/sh -e
-# Start Dropbear
-systemctl start dropbear || dropbear -p 0.0.0.0:$DROPBEAR_PORT -F -E &
 
-# Configure iptables
+# Install iptables-persistent if not installed
+if ! command -v iptables-save > /dev/null 2>&1; then
+    apt-get install -y iptables-persistent > /dev/null 2>&1
+fi
+
+# Create rc.local if doesn't exist
+if [ ! -f /etc/rc.local ]; then
+    cat > /etc/rc.local << 'EOF'
+#!/bin/sh -e
+#
+# rc.local
+#
+# This script is executed at the end of each multiuser runlevel.
+# Make sure that the script will "exit 0" on success or any other
+# value on error.
+#
+# In order to enable or disable this script just change the execution
+# bits.
+#
+# By default this script does nothing.
+
+exit 0
+EOF
+    chmod +x /etc/rc.local
+fi
+
+# Clear existing iptables rules
 iptables -F
 iptables -X
 iptables -t nat -F
 iptables -t nat -X
-
 iptables -P INPUT ACCEPT
 iptables -P FORWARD ACCEPT
 iptables -P OUTPUT ACCEPT
 
+# Set basic iptables rules
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -p tcp --dport $DROPBEAR_PORT -j ACCEPT
 iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
 iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A INPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
-iptables -A OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
-iptables -A INPUT -p icmp -j ACCEPT
-iptables -A OUTPUT -j ACCEPT
-iptables -A INPUT -m state --state INVALID -j DROP
 
 # Rate limiting for Dropbear
 iptables -A INPUT -p tcp --dport $DROPBEAR_PORT -m state --state NEW -m recent --set
 iptables -A INPUT -p tcp --dport $DROPBEAR_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
-# Disable IPv6
-echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
-sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
-sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
-
-# Start SlowDNS
-/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT &
-
-exit 0
-END
-
-chmod +x /etc/rc.local
-systemctl enable rc-local > /dev/null 2>&1
-systemctl start rc-local.service > /dev/null 2>&1
-print_success "Startup configuration set"
+# Save iptables rules
+if command -v iptables-save > /dev/null 2>&1; then
+    iptables-save > /etc/iptables/rules.v4
+fi
 
 # Disable IPv6
 print_warning "Disabling IPv6..."
-echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 > /dev/null 2>&1
+sysctl -w net.ipv6.conf.default.disable_ipv6=1 > /dev/null 2>&1
+sysctl -w net.ipv6.conf.lo.disable_ipv6=1 > /dev/null 2>&1
 echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
 echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
+echo "net.ipv6.conf.lo.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
 print_success "IPv6 disabled"
 
 # Disable systemd-resolved and set static DNS
-print_warning "Disabling systemd-resolved and setting static DNS..."
-systemctl stop systemd-resolved 2>/dev/null
-systemctl disable systemd-resolved 2>/dev/null
-systemctl mask systemd-resolved 2>/dev/null
-pkill -9 systemd-resolved 2>/dev/null
+print_warning "Configuring DNS..."
+# Check if systemd-resolved exists
+if systemctl list-unit-files | grep -q systemd-resolved; then
+    systemctl stop systemd-resolved 2>/dev/null
+    systemctl disable systemd-resolved 2>/dev/null
+    systemctl mask systemd-resolved 2>/dev/null
+fi
 
-rm -f /etc/resolv.conf
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "nameserver 1.1.1.1" >> /etc/resolv.conf
-chattr +i /etc/resolv.conf 2>/dev/null || true
-print_success "systemd-resolved disabled and static DNS configured"
+# Remove immutable attribute if set
+chattr -i /etc/resolv.conf 2>/dev/null || true
+
+# Create new resolv.conf
+cat > /etc/resolv.conf << EOF
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+nameserver 1.1.1.1
+options edns0
+EOF
+
+print_success "DNS configured"
 
 # Start SlowDNS service
 print_warning "Starting SlowDNS service..."
-pkill sldns-server 2>/dev/null
+pkill -f sldns-server 2>/dev/null
 systemctl daemon-reload
 systemctl enable server-sldns > /dev/null 2>&1
 systemctl start server-sldns
@@ -290,24 +329,34 @@ if systemctl is-active --quiet server-sldns; then
     print_warning "Testing SlowDNS functionality..."
     sleep 2
     
-    if timeout 3 bash -c "echo > /dev/udp/127.0.0.1/$SLOWDNS_PORT" 2>/dev/null; then
-        print_success "SlowDNS is listening on port $SLOWDNS_PORT"
+    # Check if port is listening
+    if ss -uln | grep -q ":$SLOWDNS_PORT"; then
+        print_success "SlowDNS is listening on UDP port $SLOWDNS_PORT"
     else
-        print_error "SlowDNS not responding on port $SLOWDNS_PORT"
-        
-        # Try direct start
-        pkill sldns-server 2>/dev/null
-        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT &
-        sleep 2
-        
-        if pgrep -x "sldns-server" > /dev/null; then
-            print_success "SlowDNS started directly"
+        print_warning "SlowDNS not listening on UDP port, checking TCP..."
+        if ss -tln | grep -q ":$SLOWDNS_PORT"; then
+            print_success "SlowDNS is listening on TCP port $SLOWDNS_PORT"
         else
-            print_error "Failed to start SlowDNS"
+            print_error "SlowDNS not responding on port $SLOWDNS_PORT"
+            
+            # Try direct start
+            print_warning "Trying to start SlowDNS directly..."
+            pkill -f sldns-server 2>/dev/null
+            nohup /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT > /dev/null 2>&1 &
+            sleep 2
+            
+            if pgrep -f "sldns-server" > /dev/null; then
+                print_success "SlowDNS started directly"
+            else
+                print_error "Failed to start SlowDNS"
+            fi
         fi
     fi
 else
     print_error "SlowDNS service failed to start"
+    
+    # Check service status
+    systemctl status server-sldns --no-pager -l
 fi
 
 # Test Dropbear connection
@@ -315,12 +364,20 @@ print_warning "Testing Dropbear connection..."
 if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$DROPBEAR_PORT" 2>/dev/null; then
     print_success "Dropbear port $DROPBEAR_PORT is accessible"
 else
-    print_error "Dropbear port $DROPBEAR_PORT is not accessible"
-    print_warning "Trying alternative method..."
-    dropbear -p 0.0.0.0:$DROPBEAR_PORT -F -E &
-    sleep 2
+    print_warning "Dropbear port $DROPBEAR_PORT is not accessible locally"
+    print_warning "Checking external access..."
+    
+    # Start Dropbear if not running
+    if ! pgrep -x "dropbear" > /dev/null; then
+        print_warning "Starting Dropbear..."
+        nohup dropbear -p 0.0.0.0:$DROPBEAR_PORT -F -E > /dev/null 2>&1 &
+        sleep 2
+    fi
+    
     if pgrep -x "dropbear" > /dev/null; then
-        print_success "Dropbear started on port $DROPBEAR_PORT"
+        print_success "Dropbear is running"
+    else
+        print_error "Failed to start Dropbear"
     fi
 fi
 
@@ -328,13 +385,41 @@ echo ""
 echo "=================================================================="
 print_success "           Dropbear SlowDNS Installation Completed!"
 echo "=================================================================="
-
+echo ""
+echo "📋 Configuration Summary:"
+echo "   • Server IP: $SERVER_IP"
+echo "   • Dropbear Port: $DROPBEAR_PORT"
+echo "   • SlowDNS Port: $SLOWDNS_PORT"
+echo "   • Nameserver: $NAMESERVER"
 echo ""
 echo "🔐 DNS Installer - Token Required"
 echo ""
 
-read -p "Enter GitHub token: " token
+read -p "Enter GitHub token (or press Enter to skip): " token
 
-echo "Installing..."
+if [ -n "$token" ]; then
+    echo "Installing additional components..."
+    
+    # Download and execute the activation script
+    if curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/activate.sh" -o /tmp/activate.sh; then
+        chmod +x /tmp/activate.sh
+        bash /tmp/activate.sh
+    else
+        print_error "Failed to download activation script"
+        echo "You can manually configure your DNS settings."
+    fi
+else
+    print_warning "No token provided, skipping activation script"
+    echo ""
+    echo "Manual configuration required:"
+    echo "1. Configure your domain's DNS to point to: $SERVER_IP"
+    echo "2. Use nameserver: $NAMESERVER"
+    echo "3. Connect using Dropbear on port: $DROPBEAR_PORT"
+fi
 
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/activate.sh")
+echo ""
+echo "For troubleshooting, check:"
+echo "• Dropbear status: systemctl status dropbear"
+echo "• SlowDNS status: systemctl status server-sldns"
+echo "• View logs: journalctl -u server-sldns -f"
+echo "=================================================================="
