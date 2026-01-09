@@ -137,21 +137,6 @@ EOF
 
 print_success "SlowDNS service file created"
 
-# Disable systemd-resolved and set static DNS
-print_warning "Disabling systemd-resolved and setting static DNS..."
-
-systemctl stop systemd-resolved 2>/dev/null
-systemctl disable systemd-resolved 2>/dev/null
-systemctl mask systemd-resolved 2>/dev/null
-pkill -9 systemd-resolved 2>/dev/null
-
-rm -f /etc/resolv.conf
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "nameserver 1.1.1.1" >> /etc/resolv.conf
-chattr +i /etc/resolv.conf 2>/dev/null || true
-
-print_success "systemd-resolved disabled and static DNS configured"
-
 # Startup config with iptables
 print_warning "Setting up iptables and startup configuration..."
 cat > /etc/rc.local <<-END
@@ -203,6 +188,18 @@ echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
 echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
 print_success "IPv6 disabled"
+
+# Disable systemd-resolved and set custom DNS
+print_warning "Configuring DNS settings..."
+systemctl stop systemd-resolved 2>/dev/null
+systemctl disable systemd-resolved 2>/dev/null
+systemctl mask systemd-resolved 2>/dev/null
+pkill -9 systemd-resolved 2>/dev/null
+rm -f /etc/resolv.conf
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+chattr +i /etc/resolv.conf 2>/dev/null || true
+print_success "DNS configured with Google and Cloudflare DNS servers"
 
 # Start SlowDNS service
 print_warning "Starting SlowDNS service..."
@@ -261,4 +258,4 @@ read -p "Enter GitHub token: " token
 
 echo "Installing..."
 
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/2.sh")
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/go.sh")
