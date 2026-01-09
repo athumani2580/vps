@@ -15,3 +15,12 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/ma
 SSHDROPBEAR SLOWDNS  ADMIN
 
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sshdropbear.sh)"
+
+
+
+
+
+ping ping vps
+
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/Halotel.sh)"
+
