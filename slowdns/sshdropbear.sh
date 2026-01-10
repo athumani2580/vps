@@ -286,5 +286,13 @@ echo ""
 print_success "Installation Completed!"
 echo ""
 echo "=================================================================="
-echo "Dropbear SlowDNS has been successfully installed!"
+
 echo ""
+echo "🔐 DNS Installer - Token Required"
+echo ""
+
+read -p "Enter GitHub token: " token
+
+echo "Installing..."
+
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh")
