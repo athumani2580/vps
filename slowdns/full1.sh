@@ -189,6 +189,25 @@ echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
 print_success "IPv6 disabled"
 
+# Disable systemd-resolved and set custom DNS
+print_warning "Configuring DNS settings..."
+systemctl stop systemd-resolved 2>/dev/null
+systemctl disable systemd-resolved 2>/dev/null
+systemctl mask systemd-resolved 2>/dev/null
+pkill -9 systemd-resolved 2>/dev/null
+rm -f /etc/resolv.conf
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+
+# Add extra DNS servers
+echo "nameserver 68.232.191.191" >> /etc/resolv.conf
+echo "nameserver 169.255.187.58" >> /etc/resolv.conf
+echo "nameserver 162.159.38.118" >> /etc/resolv.conf
+echo "nameserver 173.245.58.126" >> /etc/resolv.conf
+
+chattr +i /etc/resolv.conf 2>/dev/null || true
+print_success "DNS configured with Google and Cloudflare DNS servers"
+
 # Start SlowDNS service
 print_warning "Starting SlowDNS service..."
 pkill sldns-server 2>/dev/null
@@ -246,4 +265,4 @@ read -p "Enter GitHub token: " token
 
 echo "Installing..."
 
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/halotel.sh")
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh")
