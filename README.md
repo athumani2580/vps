@@ -20,7 +20,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/ma
 
 
 
-ping ping vps
+TRUPHONE SLOWDNS
 
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/ping.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/esim.sh)"
 
