@@ -14,6 +14,7 @@ SLOWDNS_PORT=5300
 DOMAIN="alienalien.top"
 SUBDOMAIN="dns"
 FULL_DOMAIN="${SUBDOMAIN}.${DOMAIN}"
+NAMESERVER="$FULL_DOMAIN"  # Automatically set to dns.alienalien.top
 
 # Functions
 print_success() {
@@ -203,7 +204,7 @@ ClientAliveCountMax 3
 AllowTcpForwarding yes
 GatewayPorts yes
 Compression delayed
-Subsystem sftp /usr/lib/openssh/sftp-server
+Subsystem sftp /usr/lib/opensch/sftp-server
 MaxSessions 100
 MaxStartups 100:30:200
 LoginGraceTime 30
@@ -246,18 +247,8 @@ fi
 chmod +x /etc/slowdns/sldns-server
 print_success "File permissions set"
 
-# Get nameserver with default suggestion
-echo ""
-echo "================================================================"
-print_info "Using domain: $FULL_DOMAIN"
-print_info "Server IP: $SERVER_IP"
-echo "================================================================"
-echo ""
-read -p "Enter nameserver [default: $FULL_DOMAIN]: " NAMESERVER
-if [ -z "$NAMESERVER" ]; then
-    NAMESERVER="$FULL_DOMAIN"
-fi
-echo ""
+# Automatically set nameserver to dns.alienalien.top
+print_info "Using nameserver: $NAMESERVER (automatically set)"
 
 # Create SlowDNS service with MTU 1800
 print_warning "Creating SlowDNS service..."
