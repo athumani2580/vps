@@ -14,7 +14,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/ma
 
 SSHDROPBEAR SLOWDNS  ADMIN
 
-apt-get update && apt-get upgrade sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sshdropbear.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sshdropbear.sh)"
 
 
 
@@ -22,5 +22,5 @@ apt-get update && apt-get upgrade sudo bash -c "$(curl -fsSL https://raw.githubu
 
 TRUPHONE SLOWDNS
 
-apt-get update && apt-get upgrade sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/esim.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/esim.sh)"
 
