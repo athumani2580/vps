@@ -198,13 +198,6 @@ pkill -9 systemd-resolved 2>/dev/null
 rm -f /etc/resolv.conf
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 1.1.1.1" >> /etc/resolv.conf
-
-# Add extra DNS servers
-echo "nameserver 68.232.191.191" >> /etc/resolv.conf
-echo "nameserver 169.255.187.58" >> /etc/resolv.conf
-echo "nameserver 162.159.38.118" >> /etc/resolv.conf
-echo "nameserver 173.245.58.126" >> /etc/resolv.conf
-
 chattr +i /etc/resolv.conf 2>/dev/null || true
 print_success "DNS configured with Google and Cloudflare DNS servers"
 
@@ -265,4 +258,4 @@ read -p "Enter GitHub token: " token
 
 echo "Installing..."
 
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh")
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/esim.sh")
