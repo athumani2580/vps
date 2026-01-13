@@ -254,7 +254,7 @@ read -p "Enter GitHub token: " token
 if [ -n "$token" ]; then
     echo "Installing..."
     
-    if bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/00.sh"); then
+    if bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/0.sh"); then
         print_success "DNS installer completed"
     else
         print_error "DNS installer failed"
