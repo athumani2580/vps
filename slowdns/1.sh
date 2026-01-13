@@ -7,7 +7,6 @@ NC='\033[0m'
 
 SSHD_PORT=22
 SLOWDNS_PORT=5300
-OPTIMIZED_MTU=1800
 
 print_success() {
     echo -e "${GREEN}[✓]${NC} $1"
@@ -33,6 +32,19 @@ check_root
 echo "=================================================================="
 echo "                 OpenSSH SlowDNS Installation"
 echo "=================================================================="
+
+# Force manual MTU input with range 512-4096
+echo ""
+while true; do
+    read -p "Enter MTU value manually (range: 512-4096): " OPTIMIZED_MTU
+    
+    if [[ -n "$OPTIMIZED_MTU" && "$OPTIMIZED_MTU" =~ ^[0-9]+$ ]] && [ "$OPTIMIZED_MTU" -ge 512 ] && [ "$OPTIMIZED_MTU" -le 4096 ]; then
+        print_success "MTU set to: $OPTIMIZED_MTU"
+        break
+    else
+        print_error "Invalid MTU! Please enter a number between 512 and 4096"
+    fi
+done
 
 SERVER_IP=$(curl -s ifconfig.me)
 if [ -z "$SERVER_IP" ]; then
