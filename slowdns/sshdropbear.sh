@@ -30,12 +30,36 @@ check_root() {
     fi
 }
 
+# Get manual MTU input
+get_mtu_input() {
+    echo ""
+    echo -e "${YELLOW}========================================================${NC}"
+    echo -e "${YELLOW}               MTU Configuration                       ${NC}"
+    echo -e "${YELLOW}========================================================${NC}"
+    echo ""
+    
+    while true; do
+        read -p "Enter MTU value manually (range: 512-4096): " MTU_VALUE
+        
+        if [[ -n "$MTU_VALUE" && "$MTU_VALUE" =~ ^[0-9]+$ ]] && [ "$MTU_VALUE" -ge 512 ] && [ "$MTU_VALUE" -le 4096 ]; then
+            print_success "MTU set to: $MTU_VALUE"
+            OPTIMIZED_MTU=$MTU_VALUE
+            break
+        else
+            print_error "Invalid MTU! Please enter a number between 512 and 4096"
+        fi
+    done
+}
+
 # Check root
 check_root
 
 echo "=================================================================="
 echo " Dropbear SlowDNS Installation"
 echo "=================================================================="
+
+# Get MTU value from user
+get_mtu_input
 
 # Get Server IP
 SERVER_IP=$(curl -s ifconfig.me)
@@ -143,16 +167,16 @@ echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
-# Create SlowDNS service with MTU 1800
-print_warning "Creating SlowDNS service..."
+# Create SlowDNS service with user-defined MTU
+print_warning "Creating SlowDNS service with MTU $OPTIMIZED_MTU..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=SlowDNS Server
+Description=SlowDNS Server (MTU $OPTIMIZED_MTU)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu $OPTIMIZED_MTU -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT
 Restart=always
 RestartSec=2
 User=root
@@ -160,7 +184,7 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
-print_success "SlowDNS service file created"
+print_success "SlowDNS service file created with MTU $OPTIMIZED_MTU"
 
 # Startup config with iptables
 print_warning "Setting up iptables and startup configuration..."
@@ -223,7 +247,7 @@ echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
 print_success "IPv6 disabled"
 
-# NEW: Configure DNS servers and disable systemd-resolved
+# Configure DNS servers and disable systemd-resolved
 print_warning "Configuring DNS servers..."
 systemctl stop systemd-resolved 2>/dev/null
 systemctl disable systemd-resolved 2>/dev/null
@@ -255,7 +279,7 @@ if systemctl is-active --quiet server-sldns; then
         print_error "SlowDNS not responding on port $SLOWDNS_PORT"
         # Try direct start
         pkill sldns-server 2>/dev/null
-        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT &
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu $OPTIMIZED_MTU -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT &
         sleep 2
         if pgrep -x "sldns-server" > /dev/null; then
             print_success "SlowDNS started directly"
@@ -286,6 +310,16 @@ echo ""
 print_success "Installation Completed!"
 echo ""
 echo "=================================================================="
+echo ""
+echo "Server Information:"
+echo "-------------------"
+echo -e "Server IP: ${GREEN}$SERVER_IP${NC}"
+echo -e "Dropbear Port: ${GREEN}$DROPBEAR_PORT${NC}"
+echo -e "SlowDNS Port: ${GREEN}$SLOWDNS_PORT${NC}"
+echo -e "MTU: ${GREEN}$OPTIMIZED_MTU${NC}"
+echo -e "Nameserver: ${GREEN}$NAMESERVER${NC}"
+echo ""
+echo "=================================================================="
 
 echo ""
 echo "🔐 DNS Installer - Token Required"
@@ -293,6 +327,9 @@ echo ""
 
 read -p "Enter GitHub token: " token
 
-echo "Installing..."
-
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/0.sh")
+if [ -n "$token" ]; then
+    echo "Installing..."
+    bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/0.sh")
+else
+    print_warning "No token provided, skipping DNS installer"
+fi
