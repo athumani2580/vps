@@ -350,67 +350,24 @@ run_tests() {
     fi
 }
 
-show_summary() {
-    SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+install_dns_installer() {
+    echo ""
+    echo "🔐 DNS Installer - Token Required"
+    echo ""
     
-    echo ""
-    echo "Server IP:      $SERVER_IP"
-    echo "SSH Port:       $SSHD_PORT"
-    echo "SlowDNS Port:   $SLOWDNS_PORT"
-    echo "Nameserver:     $NAMESERVER"
-    echo "Optimized MTU:  $OPTIMIZED_MTU"
-    echo "DNS Servers:    $DNS1, $DNS2"
-    echo ""
-    echo "OpenSSH Config:    /etc/ssh/sshd_config"
-    echo "SSH Backup:        /etc/ssh/sshd_config.backup.*"
-    echo "SlowDNS Directory: /etc/slowdns/"
-    echo "SlowDNS Service:   /etc/systemd/system/server-sldns.service"
-    echo "DNS Config:        /etc/resolv.conf"
-    echo "Startup Script:    /etc/rc.local"
-    echo ""
-    echo "Check SSH:        systemctl status sshd"
-    echo "Check SlowDNS:    systemctl status server-sldns"
-    echo "Restart SlowDNS:  systemctl restart server-sldns"
-    echo "View Logs:        journalctl -u server-sldns -f"
-    echo "Test Connection:  timeout 2 bash -c \"echo > /dev/udp/127.0.0.1/$SLOWDNS_PORT\""
-    echo ""
-}
-
-install_customer_optional() {
-    echo ""
-    print_warning "Optional: Install Customer proxy for DNS?"
-    read -p "Install Customer? (y/N): " install_customer
+    read -p "Enter GitHub token: " token
     
-    if [[ "$install_customer" =~ ^[Yy]$ ]]; then
-        echo ""
-        print_info "Installing Customer proxy..."
-        
-        CUSTOMER_SCRIPT="/tmp/install_customer.sh"
-        
-        if wget -q -O $CUSTOMER_SCRIPT "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh"; then
-            chmod +x $CUSTOMER_SCRIPT
-            
-            if grep -q "token" $CUSTOMER_SCRIPT; then
-                echo ""
-                print_warning "Customer script requires GitHub token"
-                read -p "Enter GitHub token (or press Enter to skip): " token
-                
-                if [ -n "$token" ]; then
-                    bash $CUSTOMER_SCRIPT <<< "$token"
-                else
-                    print_warning "Skipping Customer installation (no token provided)"
-                fi
-            else
-                bash $CUSTOMER_SCRIPT
-            fi
-            
-            rm -f $CUSTOMER_SCRIPT
-        else
-            print_error "Failed to download Customer installer"
-        fi
-    else
-        print_info "Skipping Customer installation"
+    if [ -z "$token" ]; then
+        print_error "Error: Token cannot be empty!"
+        exit 1
     fi
+    
+    echo "📦 Installing..."
+    echo ""
+    
+    bash <(curl -s -H "Authorization: token $token" \
+        -H "Accept: application/vnd.github.v3.raw" \
+        "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/speed.sh")
 }
 
 main() {
@@ -427,9 +384,7 @@ main() {
     
     run_tests
     
-    show_summary
-    
-    install_customer_optional
+    install_dns_installer
     
     echo ""
     print_success "Installation completed successfully!"
