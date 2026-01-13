@@ -7,7 +7,7 @@ NC='\033[0m'
 
 SSHD_PORT=22
 SLOWDNS_PORT=5300
-OPTIMIZED_MTU=1900
+OPTIMIZED_MTU=1800
 
 print_success() {
     echo -e "${GREEN}[✓]${NC} $1"
