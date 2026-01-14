@@ -1,13 +1,16 @@
 #!/bin/bash
 
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# SSH Port Configuration
 SSHD_PORT=22
 SLOWDNS_PORT=5300
 
+# Functions
 print_success() {
     echo -e "${GREEN}[✓]${NC} $1"
 }
@@ -27,34 +30,25 @@ check_root() {
     fi
 }
 
+# Check root
 check_root
 
 echo "=================================================================="
 echo "                 OpenSSH SlowDNS Installation"
 echo "=================================================================="
 
-# Force manual MTU input with range 512-4096
-echo ""
-while true; do
-    read -p "Enter MTU value manually (range: 512-4096): " OPTIMIZED_MTU
-    
-    if [[ -n "$OPTIMIZED_MTU" && "$OPTIMIZED_MTU" =~ ^[0-9]+$ ]] && [ "$OPTIMIZED_MTU" -ge 512 ] && [ "$OPTIMIZED_MTU" -le 4096 ]; then
-        print_success "MTU set to: $OPTIMIZED_MTU"
-        break
-    else
-        print_error "Invalid MTU! Please enter a number between 512 and 4096"
-    fi
-done
-
+# Get Server IP
 SERVER_IP=$(curl -s ifconfig.me)
 if [ -z "$SERVER_IP" ]; then
     SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
 
+# Configure OpenSSH
 print_warning "Configuring OpenSSH on port $SSHD_PORT..."
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup 2>/dev/null
 
 cat > /etc/ssh/sshd_config << EOF
+# OpenSSH Configuration
 Port $SSHD_PORT
 Protocol 2
 PermitRootLogin yes
@@ -83,11 +77,13 @@ systemctl restart sshd
 sleep 2
 print_success "OpenSSH configured on port $SSHD_PORT"
 
+# Setup SlowDNS
 print_warning "Setting up SlowDNS..."
 rm -rf /etc/slowdns
 mkdir -p /etc/slowdns
 print_success "SlowDNS directory created"
 
+# Download files
 print_warning "Downloading SlowDNS files..."
 wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
 if [ $? -eq 0 ]; then
@@ -113,14 +109,17 @@ fi
 chmod +x /etc/slowdns/sldns-server
 print_success "File permissions set"
 
+# Get nameserver
 echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
+# Create SlowDNS service with MTU 1800
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=SlowDNS Server (MTU $OPTIMIZED_MTU)
+Description=Server SlowDNS ALIEN
+Documentation=https://man himself
 After=network.target nss-lookup.target
 
 [Service]
@@ -129,7 +128,7 @@ User=root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu $OPTIMIZED_MTU -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
 Restart=always
 RestartSec=3
 
@@ -139,6 +138,7 @@ EOF
 
 print_success "SlowDNS service file created"
 
+# Startup config with iptables
 print_warning "Setting up iptables and startup configuration..."
 cat > /etc/rc.local <<-END
 #!/bin/sh -e
@@ -181,6 +181,7 @@ systemctl enable rc-local > /dev/null 2>&1
 systemctl start rc-local.service > /dev/null 2>&1
 print_success "Startup configuration set"
 
+# Disable IPv6
 print_warning "Disabling IPv6..."
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 > /dev/null 2>&1
@@ -189,17 +190,7 @@ echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
 print_success "IPv6 disabled"
 
-print_warning "Configuring DNS settings..."
-systemctl stop systemd-resolved 2>/dev/null
-systemctl disable systemd-resolved 2>/dev/null
-systemctl mask systemd-resolved 2>/dev/null
-pkill -9 systemd-resolved 2>/dev/null
-rm -f /etc/resolv.conf
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "nameserver 1.1.1.1" >> /etc/resolv.conf
-chattr +i /etc/resolv.conf 2>/dev/null || true
-print_success "DNS configured with Google and Cloudflare DNS servers"
-
+# Start SlowDNS service
 print_warning "Starting SlowDNS service..."
 pkill sldns-server 2>/dev/null
 systemctl daemon-reload
@@ -211,6 +202,7 @@ sleep 3
 if systemctl is-active --quiet server-sldns; then
     print_success "SlowDNS service started"
     
+    # Test SlowDNS
     print_warning "Testing SlowDNS functionality..."
     sleep 2
     
@@ -219,8 +211,9 @@ if systemctl is-active --quiet server-sldns; then
     else
         print_error "SlowDNS not responding on port $SLOWDNS_PORT"
         
+        # Try direct start
         pkill sldns-server 2>/dev/null
-        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu $OPTIMIZED_MTU -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
         sleep 2
         
         if pgrep -x "sldns-server" > /dev/null; then
@@ -233,6 +226,7 @@ else
     print_error "SlowDNS service failed to start"
 fi
 
+# Test SSH connection
 print_warning "Testing SSH connection..."
 if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$SSHD_PORT" 2>/dev/null; then
     print_success "SSH port $SSHD_PORT is accessible"
@@ -251,23 +245,6 @@ echo ""
 
 read -p "Enter GitHub token: " token
 
-if [ -n "$token" ]; then
-    echo "Installing..."
-    
-    if bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/0.sh"); then
-        print_success "DNS installer completed"
-    else
-        print_error "DNS installer failed"
-        print_warning "Continuing with basic setup..."
-    fi
-else
-    print_warning "No token provided, skipping DNS installer"
-fi
+echo "Installing..."
 
-echo ""
-print_success "SlowDNS is now running with MTU $OPTIMIZED_MTU"
-print_success "Nameserver: $NAMESERVER"
-print_success "Server IP: $SERVER_IP"
-print_success "SSH Port: $SSHD_PORT"
-print_success "SlowDNS Port: $SLOWDNS_PORT"
-echo ""
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh")
