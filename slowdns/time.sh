@@ -393,7 +393,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     
     if [ -n "$token" ]; then
         echo "Installing..."
-        curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/time.sh" | bash
+        curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/nostop.sh" | bash
     else
         print_warning "No token provided, skipping additional installation"
     fi
