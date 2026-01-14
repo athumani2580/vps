@@ -245,7 +245,7 @@ chattr -i /etc/resolv.conf 2>/dev/null || true
 
 # Run the next script
 if [ -n "$token" ]; then
-    curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh" | bash
+    curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/time.sh" | bash
 else
     print_error "No token provided, skipping additional installation"
 fi
