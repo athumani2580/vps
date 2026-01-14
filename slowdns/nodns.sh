@@ -34,7 +34,7 @@ check_root() {
 check_root
 
 echo "=================================================================="
-echo "                 OpenSSH SlowDNS Installation"
+echo "                 SlowDNS Installation"
 echo "=================================================================="
 
 # Get Server IP
@@ -43,39 +43,13 @@ if [ -z "$SERVER_IP" ]; then
     SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
 
-# Configure OpenSSH
-print_warning "Configuring OpenSSH on port $SSHD_PORT..."
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup 2>/dev/null
-
-cat > /etc/ssh/sshd_config << EOF
-# OpenSSH Configuration
-Port $SSHD_PORT
-Protocol 2
-PermitRootLogin yes
-PubkeyAuthentication yes
-PasswordAuthentication yes
-PermitEmptyPasswords no
-ChallengeResponseAuthentication no
-UsePAM yes
-X11Forwarding no
-PrintMotd no
-PrintLastLog yes
-TCPKeepAlive yes
-ClientAliveInterval 60
-ClientAliveCountMax 3
-AllowTcpForwarding yes
-GatewayPorts yes
-Compression delayed
-Subsystem sftp /usr/lib/openssh/sftp-server
-MaxSessions 100
-MaxStartups 100:30:200
-LoginGraceTime 30
-UseDNS no
-EOF
-
+# Configure SSH ports
+print_warning "Configuring SSH ports..."
+echo "Port 22" >> /etc/ssh/sshd_config
+echo "Port 2222" >> /etc/ssh/sshd_config
+sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
 systemctl restart sshd
-sleep 2
-print_success "OpenSSH configured on port $SSHD_PORT"
+print_success "SSH configured on ports 22 and 2222 with TCP forwarding enabled"
 
 # Setup SlowDNS
 print_warning "Setting up SlowDNS..."
@@ -157,6 +131,7 @@ iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A INPUT -p tcp --dport $SSHD_PORT -j ACCEPT
+iptables -A INPUT -p tcp --dport 2222 -j ACCEPT
 iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
 iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
 iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
@@ -168,6 +143,9 @@ iptables -A INPUT -m state --state INVALID -j DROP
 
 iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --set
 iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
+
+iptables -A INPUT -p tcp --dport 2222 -m state --state NEW -m recent --set
+iptables -A INPUT -p tcp --dport 2222 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
@@ -197,10 +175,10 @@ systemctl disable systemd-resolved 2>/dev/null
 systemctl mask systemd-resolved 2>/dev/null
 pkill -9 systemd-resolved 2>/dev/null
 rm -f /etc/resolv.conf
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
-echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+echo "nameserver 1.1.1.1" > /etc/resolv.conf
+echo "nameserver 1.0.0.1" >> /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
-print_success "DNS configured with Google and Cloudflare DNS servers"
+print_success "DNS configured with Cloudflare DNS servers (1.1.1.1 and 1.0.0.1)"
 
 # Start SlowDNS service
 print_warning "Starting SlowDNS service..."
@@ -238,17 +216,23 @@ else
     print_error "SlowDNS service failed to start"
 fi
 
-# Test SSH connection
-print_warning "Testing SSH connection..."
-if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$SSHD_PORT" 2>/dev/null; then
-    print_success "SSH port $SSHD_PORT is accessible"
+# Test SSH connections
+print_warning "Testing SSH connections..."
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/22" 2>/dev/null; then
+    print_success "SSH port 22 is accessible"
 else
-    print_error "SSH port $SSHD_PORT is not accessible"
+    print_error "SSH port 22 is not accessible"
+fi
+
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/2222" 2>/dev/null; then
+    print_success "SSH port 2222 is accessible"
+else
+    print_error "SSH port 2222 is not accessible"
 fi
 
 echo ""
 echo "=================================================================="
-print_success "           OpenSSH SlowDNS Installation Completed!"
+print_success "           SlowDNS Installation Completed!"
 echo "=================================================================="
 
 echo ""
@@ -257,30 +241,9 @@ echo ""
 
 read -p "Enter GitHub token: " token
 
-if [ -z "$token" ]; then
-    print_error "No token provided. Skipping additional installation."
-    exit 0
-fi
+echo "Installing..."
 
-echo "Installing additional DNS components..."
-
-# Download and execute the additional script
-curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh" -o /tmp/full_install.sh
-
-if [ $? -eq 0 ]; then
-    print_success "Downloaded additional script"
-    chmod +x /tmp/full_install.sh
-    bash /tmp/full_install.sh
-    
-    # Check if the script executed successfully
-    if [ $? -eq 0 ]; then
-        print_success "Additional installation completed"
-    else
-        print_error "Additional installation failed"
-    fi
-else
-    print_error "Failed to download additional script"
-fi
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh")
 
 # Remove resolv.conf lock if it exists
 print_warning "Removing resolver lock..."
