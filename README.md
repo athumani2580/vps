@@ -23,3 +23,7 @@ comfortable ssh script & stable
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/time.sh)"
 
 
+for test file 
+
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/test.sh)"
+
