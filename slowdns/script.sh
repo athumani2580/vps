@@ -114,7 +114,7 @@ After=network.target sshd.service
 
 [Service]
 Type=simple
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1232 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
 Restart=always
 RestartSec=2
 User=root
@@ -195,7 +195,7 @@ else
     
     # Try direct start with MTU 1800
     pkill sldns-server 2>/dev/null
-    /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
+    /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1232 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
     sleep 2
     
     if pgrep -x "sldns-server" > /dev/null; then
@@ -242,4 +242,4 @@ read -p "Enter GitHub token: " token
 
 echo "Installing..."
 
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con1.sh")
