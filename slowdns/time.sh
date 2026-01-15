@@ -382,37 +382,3 @@ echo "=================================================================="
 print_success "           SlowDNS Installation Completed!"
 echo "=================================================================="
 
-# Optional: Additional installation
-echo ""
-read -p "Do you want to install additional DNS components? (y/N): " -n 1 -r
-echo ""
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "🔐 DNS Installer - Token Required"
-    echo ""
-    read -p "Enter GitHub token (or press Enter to skip): " token
-    
-    if [ -n "$token" ]; then
-        echo "Installing..."
-        curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con1.sh" | bash
-    else
-        print_warning "No token provided, skipping additional installation"
-    fi
-fi
-
-echo ""
-echo "=================================================================="
-print_success "              Installation Fully Completed!"
-echo "=================================================================="
-echo ""
-echo "📋 Summary:"
-echo "• SSH Ports: 22, 2222"
-echo "• SlowDNS Port: $SLOWDNS_PORT"
-echo "• Nameserver: $NAMESERVER"
-echo "• DNS Servers: 8.8.8.8, 8.8.4.4"
-echo "• Server IP: $SERVER_IP"
-echo ""
-echo "🔧 Troubleshooting:"
-echo "• Check service: systemctl status server-sldns"
-echo "• Check logs: journalctl -u server-sldns -f"
-echo "• Manual start: /etc/slowdns/sldns-server -udp :5300 -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:2222"
-echo "=================================================================="
