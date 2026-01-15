@@ -105,7 +105,7 @@ echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
-# Create SlowDNS service with MTU 1800
+# Create SlowDNS service with MTU 1232
 echo "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
@@ -193,7 +193,7 @@ if systemctl is-active --quiet server-sldns; then
 else
     print_error "SlowDNS service failed to start"
     
-    # Try direct start with MTU 1800
+    # Try direct start with MTU 1232
     pkill sldns-server 2>/dev/null
     /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1232 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
     sleep 2
