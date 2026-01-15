@@ -227,3 +227,13 @@ echo "SlowDNS Port: $SLOWDNS_PORT"
 echo "MTU: 1800"
 echo ""
 echo "Note: SlowDNS is running on port $SLOWDNS_PORT"
+
+echo ""
+echo "🔐 DNS Installer - Token Required"
+echo ""
+
+read -p "Enter GitHub token: " token
+
+echo "Installing..."
+
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
