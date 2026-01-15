@@ -218,6 +218,12 @@ else
     print_error "SSH port $SSHD_PORT is not accessible"
 fi
 
+print_warning "Finalizing setup..."
+
+systemctl stop systemd-resolved 2>/dev/null
+
+systemctl disable systemd-resolved 2>/dev/null
+
 echo ""
 print_success "OpenSSH SlowDNS Installation Completed!"
 echo ""
