@@ -46,8 +46,8 @@ fi
 # Configure SSH ports
 print_warning "Configuring SSH ports..."
 
+echo "Port 222" >> /etc/ssh/sshd_config
 echo "Port 22" >> /etc/ssh/sshd_config
-echo "Port 2222" >> /etc/ssh/sshd_config
 sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
 
 systemctl restart sshd 2>/dev/null
@@ -105,7 +105,7 @@ User=root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:22
 Restart=always
 RestartSec=3
 
