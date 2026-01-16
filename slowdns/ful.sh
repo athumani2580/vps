@@ -1,292 +1,262 @@
 #!/bin/bash
 
-# Color definitions
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-RED='\033[1;31m'
-CYAN='\033[1;36m'
-GREEN='\033[1;32m'
 NC='\033[0m'
 
-# Check if running as root
-if [ "$(whoami)" != "root" ]; then
-    echo -e "${RED}Error: This script must be run as root.${NC}"
-    exit 1
+# SSH Port Configuration
+SSHD_PORT=22
+SLOWDNS_PORT=5300
+
+# Functions
+print_success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[✗]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Please run as root: sudo bash $0${NC}"
+        exit 1
+    fi
+}
+
+# Check root
+check_root
+
+echo "=================================================================="
+echo "                 OpenSSH SlowDNS Installation"
+echo "=================================================================="
+
+# Get Server IP
+SERVER_IP=$(curl -s ifconfig.me)
+if [ -z "$SERVER_IP" ]; then
+    SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
 
-# Function to check if input is a number
-is_number() {
-    [[ $1 =~ ^[0-9]+$ ]]
-}
+# Configure OpenSSH
+print_warning "Configuring OpenSSH on port $SSHD_PORT..."
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup 2>/dev/null
 
-# Token-based installer function
-install_with_token() {
-    clear
-    echo -e "${YELLOW}"
-    echo "🔐 DNS Installer - Token Required"
-    echo -e "${NC}"
-    echo ""
-    read -p "Enter GitHub token: " token
-    
-    if [ -z "$token" ]; then
-        echo -e "${RED}Token cannot be empty!${NC}"
-        sleep 2
-        return
-    fi
-    
-    echo -e "${YELLOW}Installing with token...${NC}"
-    
-    # Download and run the external script with token authentication
-    bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
-    
-    echo ""
-    echo -e "${YELLOW}Press Enter to return to main menu...${NC}"
-    read
-}
+cat > /etc/ssh/sshd_config << EOF
+# OpenSSH Configuration
+Port $SSHD_PORT
+Protocol 2
+PermitRootLogin yes
+PubkeyAuthentication yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+UsePAM yes
+X11Forwarding no
+PrintMotd no
+PrintLastLog yes
+TCPKeepAlive yes
+ClientAliveInterval 60
+ClientAliveCountMax 3
+AllowTcpForwarding yes
+GatewayPorts yes
+Compression delayed
+Subsystem sftp /usr/lib/openssh/sftp-server
+MaxSessions 100
+MaxStartups 100:30:200
+LoginGraceTime 30
+UseDNS no
+EOF
 
-# Main installation function
-install_slowdns() {
-    echo -e "${YELLOW}Installing DNSTT (SlowDNS)...${NC}"
-    
-    # Update system
-    apt -y update && apt -y upgrade
-    apt -y install iptables-persistent wget screen lsof
-    
-    # Create directory for DNSTT
-    rm -rf /root/dnstt
-    mkdir /root/dnstt
-    cd /root/dnstt
-    
-    # Download DNSTT server binary
-    echo -e "${YELLOW}Downloading DNSTT server...${NC}"
-    wget -q https://raw.githubusercontent.com/athumani2580/DNSTT/main/dnstt-server
-    chmod 755 dnstt-server
-    
-    # Download server keys
-    echo -e "${YELLOW}Downloading server keys...${NC}"
-    wget -q https://raw.githubusercontent.com/athumani2580/DNSTT/main/server.key
-    wget -q https://raw.githubusercontent.com/athumani2580/DNSTT/main/server.pub
-    
-    # Display public key
-    echo -e "${GREEN}Public Key:${NC}"
-    cat server.pub
-    echo ""
-    
-    # Get nameserver from user
-    while true; do
-        echo -e "${YELLOW}"
-        read -p "Enter your Nameserver (e.g., ns.example.com): " ns
-        echo -e "${NC}"
-        if [ ! -z "$ns" ]; then
-            break
-        fi
-    done
-    
-    # Get target port
-    while true; do
-        echo -e "${YELLOW}"
-        read -p "Target TCP Port (where traffic will be forwarded): " target_port
-        echo -e "${NC}"
-        if is_number "$target_port" && [ "$target_port" -ge 1 ] && [ "$target_port" -le 65535 ]; then
-            break
-        else
-            echo -e "${YELLOW}Invalid input. Please enter a valid number between 1 and 65535.${NC}"
-        fi
-    done
-    
-    # Configure iptables
-    echo -e "${YELLOW}Configuring firewall rules...${NC}"
-    iptables -I INPUT -p udp --dport 5300 -j ACCEPT
-    iptables -t nat -I PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300
-    iptables-save > /etc/iptables/rules.v4
-    
-    # Ask for service type
-    echo -e "${YELLOW}"
-    read -p "Run as system service or in screen session? (s/c): " service_type
-    echo -e "${NC}"
-    
-    if [ "$service_type" = "c" ] || [ "$service_type" = "C" ]; then
-        # Run in screen session
-        echo -e "${YELLOW}Starting DNSTT in screen session...${NC}"
-        screen -dmS slowdns ./dnstt-server -udp :5300 -privkey-file server.key "$ns" 127.0.0.1:"$target_port"
-        echo -e "${GREEN}DNSTT started in screen session 'slowdns'${NC}"
-    else
-        # Create systemd service
-        echo -e "${YELLOW}Creating systemd service...${NC}"
-        cat > /etc/systemd/system/dnstt.service << EOF
+systemctl restart sshd
+sleep 2
+print_success "OpenSSH configured on port $SSHD_PORT"
+
+# Setup SlowDNS
+print_warning "Setting up SlowDNS..."
+rm -rf /etc/slowdns
+mkdir -p /etc/slowdns
+print_success "SlowDNS directory created"
+
+# Download files
+print_warning "Downloading SlowDNS files..."
+wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
+if [ $? -eq 0 ]; then
+    print_success "server.key downloaded"
+else
+    print_error "Failed to download server.key"
+fi
+
+wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
+if [ $? -eq 0 ]; then
+    print_success "server.pub downloaded"
+else
+    print_error "Failed to download server.pub"
+fi
+
+wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
+if [ $? -eq 0 ]; then
+    print_success "sldns-server downloaded"
+else
+    print_error "Failed to download sldns-server"
+fi
+
+chmod +x /etc/slowdns/sldns-server
+print_success "File permissions set"
+
+# Get nameserver
+echo ""
+read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
+echo ""
+
+# Create SlowDNS service with MTU 1800
+print_warning "Creating SlowDNS service..."
+cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=DNSTT SlowDNS Alien Server
-Wants=network.target
-After=network.target
+Description=Server SlowDNS ALIEN
+Documentation=https://man himself
+After=network.target nss-lookup.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/dnstt
-ExecStart=/root/dnstt/dnstt-server -udp :5300 -mtu 1800 -privkey-file /root/dnstt/server.key $ns 127.0.0.1:$target_port
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
 Restart=always
 RestartSec=3
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=dnstt
 
 [Install]
 WantedBy=multi-user.target
 EOF
-        
-        # Enable and start service
-        systemctl daemon-reload
-        systemctl start dnstt
-        systemctl enable dnstt
-        
-        echo -e "${GREEN}DNSTT service created and started${NC}"
-    fi
+
+print_success "SlowDNS service file created"
+
+# Startup config with iptables
+print_warning "Setting up iptables and startup configuration..."
+cat > /etc/rc.local <<-END
+#!/bin/sh -e
+systemctl start sshd
+
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -p tcp --dport $SSHD_PORT -j ACCEPT
+iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A INPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
+iptables -A OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
+iptables -A INPUT -p icmp -j ACCEPT
+iptables -A OUTPUT -j ACCEPT
+iptables -A INPUT -m state --state INVALID -j DROP
+
+iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --set
+iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
+
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
+sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
+
+exit 0
+END
+
+chmod +x /etc/rc.local
+systemctl enable rc-local > /dev/null 2>&1
+systemctl start rc-local.service > /dev/null 2>&1
+print_success "Startup configuration set"
+
+# Disable IPv6
+print_warning "Disabling IPv6..."
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 > /dev/null 2>&1
+echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
+echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
+sysctl -p > /dev/null 2>&1
+print_success "IPv6 disabled"
+
+# Disable systemd-resolved and set custom DNS
+print_warning "Configuring DNS settings..."
+systemctl stop systemd-resolved 2>/dev/null
+systemctl disable systemd-resolved 2>/dev/null
+systemctl mask systemd-resolved 2>/dev/null
+pkill -9 systemd-resolved 2>/dev/null
+rm -f /etc/resolv.conf
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+chattr +i /etc/resolv.conf 2>/dev/null || true
+print_success "DNS configured with Google and Cloudflare DNS servers"
+
+# Start SlowDNS service
+print_warning "Starting SlowDNS service..."
+pkill sldns-server 2>/dev/null
+systemctl daemon-reload
+systemctl enable server-sldns > /dev/null 2>&1
+systemctl start server-sldns
+
+sleep 3
+
+if systemctl is-active --quiet server-sldns; then
+    print_success "SlowDNS service started"
     
-    # Show status
-    echo ""
-    echo -e "${GREEN}=== Installation Complete ===${NC}"
-    echo ""
-    echo -e "${YELLOW}Service Status:${NC}"
-    if [ "$service_type" = "c" ] || [ "$service_type" = "C" ]; then
-        screen -ls | grep slowdns
+    # Test SlowDNS
+    print_warning "Testing SlowDNS functionality..."
+    sleep 2
+    
+    if timeout 3 bash -c "echo > /dev/udp/127.0.0.1/$SLOWDNS_PORT" 2>/dev/null; then
+        print_success "SlowDNS is listening on port $SLOWDNS_PORT"
     else
-        systemctl status dnstt --no-pager -l
+        print_error "SlowDNS not responding on port $SLOWDNS_PORT"
+        
+        # Try direct start
+        pkill sldns-server 2>/dev/null
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
+        sleep 2
+        
+        if pgrep -x "sldns-server" > /dev/null; then
+            print_success "SlowDNS started directly"
+        else
+            print_error "Failed to start SlowDNS"
+        fi
     fi
-    
-    echo ""
-    echo -e "${YELLOW}Listening Ports:${NC}"
-    lsof -i :5300
-    
-    echo ""
-    echo -e "${GREEN}Configuration Summary:${NC}"
-    echo "Nameserver: $ns"
-    echo "Public Key: $(cat server.pub)"
-    echo "Target Port: $target_port"
-    echo "DNS Port: 5300 (UDP)"
-    echo ""
-    echo -e "${YELLOW}Important:${NC}"
-    echo "1. Make sure to use the public key above in your client configuration"
-    echo "2. DNS queries on port 53 are redirected to port 5300"
-    echo "3. Check if service is running with: systemctl status dnstt"
-    echo ""
-}
+else
+    print_error "SlowDNS service failed to start"
+fi
 
-# Management function
-manage_slowdns() {
-    while true; do
-        clear
-        echo -e "${CYAN}=== SlowDNS Management ===${NC}"
-        echo ""
-        echo "1. Start DNSTT service"
-        echo "2. Stop DNSTT service"
-        echo "3. Restart DNSTT service"
-        echo "4. Check service status"
-        echo "5. View logs"
-        echo "6. Kill screen session (if running in screen)"
-        echo "7. Show public key"
-        echo "8. Back to main menu"
-        echo ""
-        
-        read -p "Select option [1-8]: " choice
-        
-        case $choice in
-            1)
-                systemctl start dnstt
-                echo -e "${GREEN}DNSTT service started${NC}"
-                sleep 2
-                ;;
-            2)
-                systemctl stop dnstt
-                echo -e "${YELLOW}DNSTT service stopped${NC}"
-                sleep 2
-                ;;
-            3)
-                systemctl restart dnstt
-                echo -e "${GREEN}DNSTT service restarted${NC}"
-                sleep 2
-                ;;
-            4)
-                echo -e "${YELLOW}Service Status:${NC}"
-                systemctl status dnstt --no-pager -l
-                echo ""
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            5)
-                echo -e "${YELLOW}Service Logs:${NC}"
-                journalctl -u dnstt -n 20 --no-pager
-                echo ""
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            6)
-                screen -X -S slowdns quit
-                echo -e "${YELLOW}Screen session 'slowdns' killed${NC}"
-                sleep 2
-                ;;
-            7)
-                echo -e "${GREEN}Public Key:${NC}"
-                cat /root/dnstt/server.pub 2>/dev/null || echo "Public key not found"
-                echo ""
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            8)
-                break
-                ;;
-            *)
-                echo -e "${RED}Invalid option${NC}"
-                sleep 1
-                ;;
-        esac
-    done
-}
+# Test SSH connection
+print_warning "Testing SSH connection..."
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$SSHD_PORT" 2>/dev/null; then
+    print_success "SSH port $SSHD_PORT is accessible"
+else
+    print_error "SSH port $SSHD_PORT is not accessible"
+fi
 
-# Main menu
-while true; do
-    clear
-    echo -e "${YELLOW}SlowDNS (DNSTT) Installer${NC}"
-    echo "Version: 2.0"
-    echo ""
-    echo "1. Install SlowDNS (DNSTT) - Standard"
-    echo "2. Install SlowDNS with Token"
-    echo "3. Manage SlowDNS Service"
-    echo "4. Uninstall SlowDNS"
-    echo "5. Exit"
-    echo ""
-    
-    read -p "Select option [1-5]: " main_choice
-    
-    case $main_choice in
-        1)
-            install_slowdns
-            echo ""
-            echo -e "${YELLOW}Press Enter to return to main menu...${NC}"
-            read
-            ;;
-        2)
-            install_with_token
-            ;;
-        3)
-            manage_slowdns
-            ;;
-        4)
-            echo -e "${YELLOW}Uninstalling SlowDNS...${NC}"
-            systemctl stop dnstt 2>/dev/null
-            systemctl disable dnstt 2>/dev/null
-            rm -f /etc/systemd/system/dnstt.service
-            screen -X -S slowdns quit 2>/dev/null
-            rm -rf /root/dnstt
-            systemctl daemon-reload
-            echo -e "${GREEN}SlowDNS uninstalled successfully${NC}"
-            sleep 2
-            ;;
-        5)
-            echo -e "${YELLOW}Goodbye!${NC}"
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}Invalid option${NC}"
-            sleep 1
-            ;;
-    esac
-done
+echo ""
+echo "=================================================================="
+print_success "           OpenSSH SlowDNS Installation Completed!"
+echo "=================================================================="
+
+echo ""
+echo "🔐 DNS Installer - Token Required"
+echo ""
+
+read -p "Enter GitHub token: " token
+
+echo "Installing..."
+
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
