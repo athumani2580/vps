@@ -1,18 +1,14 @@
 #!/bin/bash
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# SSH Port Configuration
 SSHD_PORT=22
 SLOWDNS_PORT=5300
-RESTART_CHECK_INTERVAL=60  # Check every 60 seconds
 
-# Functions
 print_success() {
     echo -e "${GREEN}[✓]${NC} $1"
 }
@@ -36,327 +32,275 @@ check_root() {
     fi
 }
 
-check_service_status() {
-    local service_name=$1
-    if systemctl is-active --quiet "$service_name"; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-restart_service() {
-    local service_name=$1
-    print_warning "Restarting $service_name..."
-    systemctl restart "$service_name"
-    sleep 3
-    if check_service_status "$service_name"; then
-        print_success "$service_name restarted successfully"
-        return 0
-    else
-        print_error "Failed to restart $service_name"
-        return 1
-    fi
-}
-
-setup_auto_restart_service() {
-    print_warning "Setting up auto-restart monitoring service..."
+setup_auto_restart() {
+    print_warning "Setting up auto-restart system..."
     
-    # Create monitoring script
-    cat > /usr/local/bin/monitor-services.sh << 'EOF'
+    cat > /usr/local/bin/auto-restart.sh << 'EOF'
 #!/bin/bash
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-log_message() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> /var/log/service-monitor.log
-}
-
-check_and_restart() {
-    local service=$1
-    local port=$2
-    local service_name=$3
+while true; do
+    sleep 30
     
-    if ! systemctl is-active --quiet "$service"; then
-        log_message "Service $service_name is DOWN, attempting restart..."
-        systemctl restart "$service"
+    # Check SSH service
+    if ! systemctl is-active --quiet sshd; then
+        echo "$(date) - SSH service stopped, restarting..." >> /var/log/auto-restart.log
+        systemctl restart sshd
+        sleep 5
+    fi
+    
+    # Check SlowDNS service
+    if ! systemctl is-active --quiet server-sldns.service 2>/dev/null; then
+        echo "$(date) - SlowDNS service stopped, restarting..." >> /var/log/auto-restart.log
+        
+        # Try systemd restart first
+        systemctl restart server-sldns.service 2>/dev/null
         sleep 5
         
-        if systemctl is-active --quiet "$service"; then
-            log_message "Service $service_name restarted successfully"
-            # Test port connectivity
-            if timeout 3 bash -c "echo > /dev/tcp/127.0.0.1/$port" 2>/dev/null; then
-                log_message "Port $port for $service_name is now accessible"
-            fi
-        else
-            log_message "FAILED to restart $service_name, trying direct start..."
+        # If still not running, try direct start
+        if ! systemctl is-active --quiet server-sldns.service 2>/dev/null && [ -f /etc/slowdns/sldns-server ]; then
+            pkill sldns-server 2>/dev/null
             
-            # For SlowDNS, try direct start
-            if [ "$service" = "server-sldns.service" ]; then
-                pkill sldns-server 2>/dev/null
+            if [ -f /etc/slowdns/nameserver ]; then
+                NAMESERVER=$(cat /etc/slowdns/nameserver)
                 /etc/slowdns/sldns-server -udp :5300 -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:22 &
                 sleep 3
-                if pgrep -x "sldns-server" > /dev/null; then
-                    log_message "SlowDNS started directly"
-                else
-                    log_message "CRITICAL: SlowDNS completely DOWN"
-                fi
             fi
         fi
     fi
-}
-
-# Load environment if exists
-if [ -f /etc/slowdns/env ]; then
-    source /etc/slowdns/env
-fi
-
-# Main monitoring loop
-while true; do
-    # Check SSH service
-    check_and_restart "sshd" "22" "SSH"
     
-    # Check SlowDNS service if NAMESERVER is set
-    if [ -n "$NAMESERVER" ]; then
-        check_and_restart "server-sldns.service" "5300" "SlowDNS"
+    # Check if sldns-server process exists (direct start scenario)
+    if ! pgrep sldns-server >/dev/null && [ -f /etc/slowdns/sldns-server ]; then
+        echo "$(date) - SlowDNS process not found, starting..." >> /var/log/auto-restart.log
+        
+        if [ -f /etc/slowdns/nameserver ]; then
+            NAMESERVER=$(cat /etc/slowdns/nameserver)
+            /etc/slowdns/sldns-server -udp :5300 -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:22 &
+        fi
     fi
-    
-    # Check if monitoring script itself is still running
-    if ! pgrep -f "monitor-services.sh" | grep -v $$ | grep -v grep > /dev/null; then
-        log_message "Monitoring script not running, starting new instance..."
-        nohup /usr/local/bin/monitor-services.sh > /dev/null 2>&1 &
-    fi
-    
-    sleep 60
 done
 EOF
 
-    chmod +x /usr/local/bin/monitor-services.sh
-    
-    # Create systemd service for monitoring
-    cat > /etc/systemd/system/service-monitor.service << EOF
+    chmod +x /usr/local/bin/auto-restart.sh
+
+    cat > /etc/systemd/system/auto-restart.service << EOF
 [Unit]
-Description=Service Monitor for SSH and SlowDNS
+Description=Auto Restart Service for SSH and SlowDNS
 After=network.target
-Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
+ExecStart=/usr/local/bin/auto-restart.sh
 Restart=always
 RestartSec=10
-ExecStart=/usr/local/bin/monitor-services.sh
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=service-monitor
-
-# Security
-NoNewPrivileges=true
-ProtectSystem=strict
-PrivateTmp=true
-PrivateDevices=true
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    
-    # Create environment file for SlowDNS
-    if [ -n "$NAMESERVER" ]; then
-        echo "NAMESERVER=$NAMESERVER" > /etc/slowdns/env
-    fi
-    
+
     systemctl daemon-reload
-    systemctl enable service-monitor.service > /dev/null 2>&1
-    systemctl start service-monitor.service
-    
-    if systemctl is-active --quiet service-monitor.service; then
-        print_success "Auto-restart monitoring service installed and running"
-        
-        # Create log rotation
-        cat > /etc/logrotate.d/service-monitor << EOF
-/var/log/service-monitor.log {
-    daily
-    missingok
-    rotate 7
-    compress
-    delaycompress
-    notifempty
-    create 644 root root
-}
-EOF
-        
-        print_success "Log rotation configured for monitoring service"
+    systemctl enable auto-restart.service
+    systemctl start auto-restart.service
+
+    if systemctl is-active --quiet auto-restart.service; then
+        print_success "Auto-restart service installed and running"
     else
-        print_error "Failed to start monitoring service"
+        print_error "Failed to start auto-restart service"
     fi
 }
 
-setup_cron_job() {
-    print_warning "Setting up cron job for service monitoring..."
-    
-    # Create health check script
-    cat > /usr/local/bin/health-check.sh << 'EOF'
-#!/bin/bash
-
-# Health check script
-LOGFILE="/var/log/health-check.log"
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-
-check_port() {
-    local port=$1
-    local service=$2
-    if timeout 3 bash -c "echo > /dev/tcp/127.0.0.1/$port" 2>/dev/null; then
-        echo "$TIMESTAMP - $service port $port: OK" >> $LOGFILE
-        return 0
-    else
-        echo "$TIMESTAMP - $service port $port: FAILED" >> $LOGFILE
-        return 1
-    fi
-}
-
-# Check SSH
-if ! check_port 22 "SSH"; then
-    systemctl restart sshd
-    echo "$TIMESTAMP - Restarted SSH service" >> $LOGFILE
-fi
-
-# Check SlowDNS if configured
-if [ -f /etc/slowdns/server.key ] && [ -f /etc/slowdns/env ]; then
-    source /etc/slowdns/env
-    if [ -n "$NAMESERVER" ]; then
-        if ! check_port 5300 "SlowDNS"; then
-            systemctl restart server-sldns
-            echo "$TIMESTAMP - Restarted SlowDNS service" >> $LOGFILE
-        fi
-    fi
-fi
-
-# Keep log file manageable
-tail -n 1000 $LOGFILE > /tmp/health-check.tmp && mv /tmp/health-check.tmp $LOGFILE
-EOF
-
-    chmod +x /usr/local/bin/health-check.sh
-    
-    # Add to crontab - run every 5 minutes
-    (crontab -l 2>/dev/null | grep -v "/usr/local/bin/health-check.sh"; echo "*/5 * * * * /usr/local/bin/health-check.sh > /dev/null 2>&1") | crontab -
-    
-    print_success "Cron job installed (runs every 5 minutes)"
-}
-
-# Check root
 check_root
 
-echo "=================================================================="
-echo "                 OpenSSH SlowDNS Installation"
-echo "           with Auto-Restart Functionality"
-echo "=================================================================="
-
-# ... [Previous installation code remains the same until after SlowDNS setup] ...
-
-# After SlowDNS service setup, add auto-restart functionality
-print_info "Installing auto-restart functionality..."
-
-# Setup auto-restart monitoring service
-setup_auto_restart_service
-
-# Setup cron job as backup
-setup_cron_job
-
-# Create status check command
-cat > /usr/local/bin/check-services << 'EOF'
-#!/bin/bash
-
-echo "========================================"
-echo "        Service Status Check"
-echo "========================================"
-
-echo -e "\n📡 SSH Service:"
-if systemctl is-active --quiet sshd; then
-    echo -e "   Status: \033[0;32mACTIVE\033[0m"
-else
-    echo -e "   Status: \033[0;31mINACTIVE\033[0m"
+SERVER_IP=$(curl -s ifconfig.me)
+if [ -z "$SERVER_IP" ]; then
+    SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
 
-if timeout 2 bash -c "echo > /dev/tcp/127.0.0.1/22" 2>/dev/null; then
-    echo -e "   Port 22: \033[0;32mACCESSIBLE\033[0m"
-else
-    echo -e "   Port 22: \033[0;31mBLOCKED\033[0m"
-fi
+print_warning "Configuring OpenSSH on port $SSHD_PORT..."
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup 2>/dev/null
 
-echo -e "\n🌐 SlowDNS Service:"
-if systemctl is-active --quiet server-sldns.service; then
-    echo -e "   Status: \033[0;32mACTIVE\033[0m"
-else
-    echo -e "   Status: \033[0;31mINACTIVE\033[0m"
-fi
-
-if timeout 2 bash -c "echo > /dev/udp/127.0.0.1/5300" 2>/dev/null; then
-    echo -e "   Port 5300: \033[0;32mACCESSIBLE\033[0m"
-else
-    echo -e "   Port 5300: \033[0;31mBLOCKED\033[0m"
-fi
-
-echo -e "\n🔍 Monitoring Service:"
-if systemctl is-active --quiet service-monitor.service; then
-    echo -e "   Status: \033[0;32mACTIVE\033[0m"
-else
-    echo -e "   Status: \033[0;31mINACTIVE\033[0m"
-fi
-
-echo -e "\n📊 Recent Logs:"
-tail -n 10 /var/log/service-monitor.log 2>/dev/null || echo "   No logs found"
-echo "========================================"
+cat > /etc/ssh/sshd_config << EOF
+Port $SSHD_PORT
+Protocol 2
+PermitRootLogin yes
+PubkeyAuthentication yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+UsePAM yes
+X11Forwarding no
+PrintMotd no
+PrintLastLog yes
+TCPKeepAlive yes
+ClientAliveInterval 60
+ClientAliveCountMax 3
+AllowTcpForwarding yes
+GatewayPorts yes
+Compression delayed
+Subsystem sftp /usr/lib/openssh/sftp-server
+MaxSessions 100
+MaxStartups 100:30:200
+LoginGraceTime 30
+UseDNS no
 EOF
 
-chmod +x /usr/local/bin/check-services
-
-# Create restart all command
-cat > /usr/local/bin/restart-all << 'EOF'
-#!/bin/bash
-
-echo "Restarting all services..."
 systemctl restart sshd
-systemctl restart server-sldns.service
-systemctl restart service-monitor.service
-echo "Services restarted. Checking status..."
-sleep 3
-check-services
+sleep 2
+print_success "OpenSSH configured on port $SSHD_PORT"
+
+print_warning "Setting up SlowDNS..."
+rm -rf /etc/slowdns
+mkdir -p /etc/slowdns
+print_success "SlowDNS directory created"
+
+print_warning "Downloading SlowDNS files..."
+wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
+if [ $? -eq 0 ]; then
+    print_success "server.key downloaded"
+else
+    print_error "Failed to download server.key"
+fi
+
+wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
+if [ $? -eq 0 ]; then
+    print_success "server.pub downloaded"
+else
+    print_error "Failed to download server.pub"
+fi
+
+wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
+if [ $? -eq 0 ]; then
+    print_success "sldns-server downloaded"
+else
+    print_error "Failed to download sldns-server"
+fi
+
+chmod +x /etc/slowdns/sldns-server
+print_success "File permissions set"
+
+echo ""
+read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
+echo ""
+
+if [ -n "$NAMESERVER" ]; then
+    echo "$NAMESERVER" > /etc/slowdns/nameserver
+fi
+
+print_warning "Creating SlowDNS service..."
+cat > /etc/systemd/system/server-sldns.service << EOF
+[Unit]
+Description=Server SlowDNS
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-chmod +x /usr/local/bin/restart-all
+print_success "SlowDNS service file created"
 
-print_success "Utility commands installed:"
-print_info "  check-services  - Check service status"
-print_info "  restart-all     - Restart all services"
+print_warning "Setting up startup configuration..."
+cat > /etc/rc.local <<-END
+#!/bin/sh -e
+systemctl start sshd
 
-echo ""
-echo "=================================================================="
-print_success "    Installation Complete with Auto-Restart Feature!"
-echo "=================================================================="
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
 
-echo ""
-print_info "Services will automatically restart if they stop"
-print_info "Monitoring logs: /var/log/service-monitor.log"
-print_info "Health check logs: /var/log/health-check.log"
-echo ""
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
 
-# Display final status
-echo "📊 Current Service Status:"
-/usr/local/bin/check-services
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -p tcp --dport $SSHD_PORT -j ACCEPT
+iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A INPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
+iptables -A OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
+iptables -A INPUT -p icmp -j ACCEPT
+iptables -A OUTPUT -j ACCEPT
+iptables -A INPUT -m state --state INVALID -j DROP
 
-echo ""
-echo "🔐 DNS Installer - Token Required"
-echo ""
+iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --set
+iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
+
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
+sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
+
+exit 0
+END
+
+chmod +x /etc/rc.local
+systemctl enable rc-local > /dev/null 2>&1
+systemctl start rc-local.service > /dev/null 2>&1
+print_success "Startup configuration set"
+
+print_warning "Disabling IPv6..."
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 > /dev/null 2>&1
+echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
+echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
+sysctl -p > /dev/null 2>&1
+print_success "IPv6 disabled"
+
+print_warning "Configuring DNS settings..."
+systemctl stop systemd-resolved 2>/dev/null
+systemctl disable systemd-resolved 2>/dev/null
+systemctl mask systemd-resolved 2>/dev/null
+pkill -9 systemd-resolved 2>/dev/null
+rm -f /etc/resolv.conf
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+chattr +i /etc/resolv.conf 2>/dev/null || true
+print_success "DNS configured"
+
+print_warning "Starting SlowDNS service..."
+pkill sldns-server 2>/dev/null
+systemctl daemon-reload
+systemctl enable server-sldns > /dev/null 2>&1
+systemctl start server-sldns
+
+sleep 3
+
+if systemctl is-active --quiet server-sldns; then
+    print_success "SlowDNS service started"
+else
+    print_error "SlowDNS service failed to start"
+    
+    pkill sldns-server 2>/dev/null
+    /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
+    sleep 2
+    
+    if pgrep -x "sldns-server" > /dev/null; then
+        print_success "SlowDNS started directly"
+    fi
+fi
+
+setup_auto_restart
+
+print_warning "Testing SSH connection..."
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$SSHD_PORT" 2>/dev/null; then
+    print_success "SSH port $SSHD_PORT is accessible"
+else
+    print_error "SSH port $SSHD_PORT is not accessible"
+fi
+
+print_success "Installation completed"
+
 read -p "Enter GitHub token: " token
 
-echo "Installing DNS configuration..."
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
+if [ -n "$token" ]; then
+    bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
+fi
