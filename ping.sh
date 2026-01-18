@@ -1,235 +1,330 @@
 #!/bin/bash
-# ============================================
-# VPS Auto-Ping Keepalive Script
-# Version: 2.0
-# Author: VPS Maintainer
-# ============================================
 
-# Configuration
-CONFIG_FILE="/etc/vps-auto-ping.conf"
-LOG_DIR="/var/log/vps-auto-ping"
-LOG_FILE="$LOG_DIR/vps-auto-ping.log"
-PID_FILE="/var/run/vps-auto-ping.pid"
-STATUS_FILE="/tmp/vps-auto-ping.status"
+set -e
 
-# Default settings
-MODE="aggressive"           # aggressive, normal, quiet
-PING_INTERVAL=60           # seconds between ping cycles
-HTTP_INTERVAL=120          # seconds between HTTP checks
-LOG_LEVEL="info"           # debug, info, warning, error
-TARGETS=("8.8.8.8" "1.1.1.1" "google.com" "cloudflare.com")
-HTTP_TARGETS=("https://www.google.com" "https://www.cloudflare.com")
-MAX_FAILURES=5
+DNS_SERVER="127.0.0.1"
+CHECK_DOMAIN="google.com"
+SERVICE_NAME="server-sldns"
+PROCESS_NAME="sldns-serve"
+CHECK_INTERVAL=6
+LOG_FILE="/var/log/sldns-monitor.log"
+SCRIPT_PATH="/usr/local/bin/sldns-monitor"
+SERVICE_FILE="/etc/systemd/system/sldns-monitor.service"
 
-# Initialize
-init() {
-    # Create log directory
-    mkdir -p "$LOG_DIR"
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+run_monitor() {
+    echo -e "${GREEN}Starting sldns auto-monitor...${NC}"
+    echo "Checking DNS every ${CHECK_INTERVAL} seconds"
+    echo "Log file: ${LOG_FILE}"
+    echo "Press Ctrl+C to stop"
+    echo "----------------------------------------"
     
-    # Create PID file
-    echo $$ > "$PID_FILE"
+    mkdir -p /var/log/sldns
+    touch "$LOG_FILE"
     
-    # Create status file
-    echo "STATUS=STARTED" > "$STATUS_FILE"
-    echo "TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')" >> "$STATUS_FILE"
-    echo "PID=$$" >> "$STATUS_FILE"
-    echo "MODE=$MODE" >> "$STATUS_FILE"
+    log() {
+        local timestamp
+        timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[$timestamp] $1" >> "$LOG_FILE"
+    }
     
-    log "info" "========================================"
-    log "info" "VPS Auto-Ping Keepalive Started"
-    log "info" "PID: $$ | Mode: $MODE"
-    log "info" "========================================"
+    log "=== sldns Auto-Monitor Started ==="
+    log "DNS Server: $DNS_SERVER"
+    log "Check Interval: ${CHECK_INTERVAL}s"
+    log "Service: $SERVICE_NAME"
+    log "Process: $PROCESS_NAME"
+    
+    local check_count=0
+    local fail_count=0
+    local restart_count=0
+    
+    while true; do
+        check_count=$((check_count + 1))
+        
+        if dig @"$DNS_SERVER" "$CHECK_DOMAIN" +short +time=2 +tries=1 > /dev/null 2>&1; then
+            if [ $((check_count % 100)) -eq 0 ]; then
+                log "Check #$check_count: DNS OK (Total fails: $fail_count, Restarts: $restart_count)"
+            fi
+        else
+            fail_count=$((fail_count + 1))
+            log "Check #$check_count: DNS FAILED - Attempting restart..."
+            
+            if pkill -x "$PROCESS_NAME" 2>/dev/null; then
+                log "Killed $PROCESS_NAME process"
+            else
+                log "No $PROCESS_NAME process found (already dead?)"
+            fi
+            
+            if systemctl start "$SERVICE_NAME"; then
+                restart_count=$((restart_count + 1))
+                log "Service $SERVICE_NAME started successfully"
+            else
+                log "ERROR: Failed to start $SERVICE_NAME"
+            fi
+            
+            sleep 10
+            
+            if systemctl is-active --quiet "$SERVICE_NAME"; then
+                log "Service verification: ACTIVE"
+            else
+                log "Service verification: INACTIVE - trying again..."
+                systemctl restart "$SERVICE_NAME"
+            fi
+        fi
+        
+        sleep "$CHECK_INTERVAL"
+    done
 }
 
-# Cleanup
-cleanup() {
-    log "info" "Shutting down VPS Auto-Ping"
-    echo "STATUS=STOPPED" >> "$STATUS_FILE"
-    echo "STOP_TIME=$(date '+%Y-%m-%d %H:%M:%S')" >> "$STATUS_FILE"
-    rm -f "$PID_FILE"
-    exit 0
-}
+install_monitor() {
+    echo -e "${BLUE}Installing sldns auto-monitor...${NC}"
+    
+    if [ "$EUID" -ne 0 ]; then 
+        echo -e "${RED}Please run as root: sudo $0${NC}"
+        exit 1
+    fi
+    
+    echo -e "${YELLOW}Creating monitor script at $SCRIPT_PATH...${NC}"
+    cat > "$SCRIPT_PATH" << 'EOF'
+#!/bin/bash
 
-# Logging function
+DNS_SERVER="127.0.0.1"
+CHECK_DOMAIN="google.com"
+SERVICE_NAME="server-sldns"
+PROCESS_NAME="sldns-serve"
+CHECK_INTERVAL=6
+LOG_FILE="/var/log/sldns-monitor.log"
+
+mkdir -p /var/log/sldns
+touch "$LOG_FILE"
+
 log() {
-    local level="$1"
-    local message="$2"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
-    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-# Test network connectivity
-test_ping() {
-    local target="$1"
-    local count="${2:-2}"
-    local timeout="${3:-2}"
-    
-    if ping -c "$count" -W "$timeout" "$target" > /dev/null 2>&1; then
-        log "debug" "Ping ✓ $target"
-        return 0
-    else
-        log "warning" "Ping ✗ $target"
-        return 1
+log "=== sldns Monitor Started ==="
+
+while true; do
+    if ! dig @"$DNS_SERVER" "$CHECK_DOMAIN" +short +time=2 +tries=1 > /dev/null 2>&1; then
+        log "DNS failed - restarting service"
+        
+        pkill -x "$PROCESS_NAME" 2>/dev/null
+        
+        systemctl start "$SERVICE_NAME"
+        
+        log "Restart completed"
+        sleep 10
     fi
-}
-
-# Test HTTP connectivity
-test_http() {
-    local url="$1"
-    local timeout="${2:-5}"
     
-    if curl -s --max-time "$timeout" "$url" > /dev/null 2>&1; then
-        log "debug" "HTTP ✓ $url"
-        return 0
-    else
-        log "warning" "HTTP ✗ $url"
-        return 1
-    fi
-}
-
-# Test DNS resolution
-test_dns() {
-    local domain="$1"
-    
-    if dig +short "$domain" @8.8.8.8 > /dev/null 2>&1; then
-        log "debug" "DNS ✓ $domain"
-        return 0
-    else
-        log "warning" "DNS ✗ $domain"
-        return 1
-    fi
-}
-
-# Generate system activity
-generate_activity() {
-    # File system activity
-    touch "/tmp/.vps_keepalive_$(date +%s)"
-    
-    # Small CPU activity
-    timeout 0.1 dd if=/dev/urandom of=/dev/null bs=1K count=10 2>/dev/null
-    
-    # Memory activity
-    local temp_array=()
-    for i in {1..50}; do
-        temp_array[$i]=$i
-    done
-    
-    log "debug" "Generated system activity"
-}
-
-# Aggressive mode - maximum activity
-aggressive_mode() {
-    log "info" "Running in AGGRESSIVE mode"
-    
-    while true; do
-        local cycle_start=$(date +%s)
-        
-        # Ping all targets
-        for target in "${TARGETS[@]}"; do
-            test_ping "$target" 2 1 &
-        done
-        wait
-        
-        # HTTP tests
-        for url in "${HTTP_TARGETS[@]}"; do
-            test_http "$url" &
-        done
-        wait
-        
-        # DNS tests
-        test_dns "google.com" &
-        test_dns "cloudflare.com" &
-        wait
-        
-        # Generate system activity
-        generate_activity
-        
-        # Update status
-        update_status
-        
-        # Wait for next cycle
-        sleep 30
-    done
-}
-
-# Normal mode - balanced activity
-normal_mode() {
-    log "info" "Running in NORMAL mode"
-    
-    while true; do
-        # Ping primary targets
-        test_ping "8.8.8.8"
-        test_ping "1.1.1.1"
-        
-        # HTTP test
-        test_http "https://www.google.com"
-        
-        # Generate activity
-        generate_activity
-        
-        # Update status
-        update_status
-        
-        # Wait 2 minutes
-        sleep 120
-    done
-}
-
-# Quiet mode - minimal activity
-quiet_mode() {
-    log "info" "Running in QUIET mode"
-    
-    while true; do
-        # Single ping
-        test_ping "8.8.8.8"
-        
-        # Update status
-        update_status
-        
-        # Wait 5 minutes
-        sleep 300
-    done
-}
-
-# Update status file
-update_status() {
-    cat > "$STATUS_FILE" << EOF
-STATUS=RUNNING
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-PID=$$
-MODE=$MODE
-UPTIME=$(uptime -p)
-LOAD=$(cat /proc/loadavg | awk '{print $1,$2,$3}')
-LAST_ACTIVITY=$(date '+%Y-%m-%d %H:%M:%S')
+    sleep "$CHECK_INTERVAL"
+done
 EOF
-}
-
-# Trap signals
-trap cleanup SIGINT SIGTERM
-
-# Main execution
-main() {
-    # Initialize
-    init
     
-    # Run based on mode
-    case "$MODE" in
-        "aggressive")
-            aggressive_mode
-            ;;
-        "normal")
-            normal_mode
-            ;;
-        "quiet")
-            quiet_mode
-            ;;
-        *)
-            log "error" "Unknown mode: $MODE. Using normal mode."
-            normal_mode
-            ;;
-    esac
+    chmod +x "$SCRIPT_PATH"
+    echo -e "${GREEN}✓ Monitor script created${NC}"
+    
+    echo -e "${YELLOW}Creating systemd service...${NC}"
+    cat > "$SERVICE_FILE" << EOF
+[Unit]
+Description=sldns Auto-Monitor (6-second checks)
+After=network.target $SERVICE_NAME.service
+Requires=$SERVICE_NAME.service
+
+[Service]
+Type=simple
+ExecStart=$SCRIPT_PATH
+Restart=always
+RestartSec=5
+User=root
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+MemoryMax=50M
+CPUQuota=5%
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    echo -e "${GREEN}✓ Systemd service created${NC}"
+    
+    systemctl daemon-reload
+    
+    systemctl enable sldns-monitor.service
+    systemctl start sldns-monitor.service
+    
+    if systemctl is-active --quiet sldns-monitor.service; then
+        echo -e "${GREEN}✓ Monitor service started successfully${NC}"
+    else
+        echo -e "${RED}✗ Failed to start monitor service${NC}"
+        systemctl status sldns-monitor.service
+        exit 1
+    fi
+    
+    cat > /etc/logrotate.d/sldns-monitor << EOF
+$LOG_FILE {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 644 root root
+}
+EOF
+    echo -e "${GREEN}✓ Log rotation configured${NC}"
+    
+    echo -e "\n${GREEN}========================================${NC}"
+    echo -e "${GREEN}INSTALLATION COMPLETE!${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+    echo "Monitor is now running automatically."
+    echo ""
+    echo "Commands:"
+    echo "  Check status:   systemctl status sldns-monitor"
+    echo "  View logs:      journalctl -u sldns-monitor -f"
+    echo "                  tail -f $LOG_FILE"
+    echo "  Stop monitor:   systemctl stop sldns-monitor"
+    echo "  Start monitor:  systemctl start sldns-monitor"
+    echo "  Restart:        systemctl restart sldns-monitor"
+    echo ""
+    echo "Test DNS manually:"
+    echo "  dig @127.0.0.1 google.com +short"
+    echo ""
+    echo "The monitor will:"
+    echo "  1. Check DNS every 6 seconds"
+    echo "  2. Kill sldns-serve if DNS fails"
+    echo "  3. Start server-sldns service"
+    echo "  4. Run automatically on system boot"
+    echo ""
+    echo "Log file: $LOG_FILE"
+    echo -e "${GREEN}========================================${NC}"
 }
 
-# Start main function
-main "$@"
+uninstall_monitor() {
+    echo -e "${YELLOW}Uninstalling sldns monitor...${NC}"
+    
+    systemctl stop sldns-monitor.service 2>/dev/null || true
+    systemctl disable sldns-monitor.service 2>/dev/null || true
+    
+    rm -f "$SCRIPT_PATH"
+    rm -f "$SERVICE_FILE"
+    rm -f /etc/logrotate.d/sldns-monitor
+    
+    systemctl daemon-reload
+    
+    echo -e "${GREEN}✓ sldns monitor uninstalled${NC}"
+    echo "Note: Log file at $LOG_FILE was not removed"
+}
+
+check_status() {
+    echo -e "${BLUE}Checking sldns monitor status...${NC}"
+    echo ""
+    
+    if [ -f "$SERVICE_FILE" ]; then
+        echo -e "${GREEN}✓ Monitor service installed${NC}"
+    else
+        echo -e "${RED}✗ Monitor service not installed${NC}"
+    fi
+    
+    if systemctl is-active --quiet sldns-monitor.service 2>/dev/null; then
+        echo -e "${GREEN}✓ Monitor service is RUNNING${NC}"
+    else
+        echo -e "${YELLOW}⚠ Monitor service is STOPPED${NC}"
+    fi
+    
+    if [ -f "$LOG_FILE" ]; then
+        echo -e "${GREEN}✓ Log file exists: $LOG_FILE${NC}"
+        echo "Recent log entries:"
+        tail -5 "$LOG_FILE" 2>/dev/null || echo "  (log file empty)"
+    fi
+    
+    echo ""
+    echo -e "${BLUE}Testing DNS connection...${NC}"
+    if dig @"$DNS_SERVER" "$CHECK_DOMAIN" +short +time=2 2>/dev/null | head -1; then
+        echo -e "${GREEN}✓ DNS is working${NC}"
+    else
+        echo -e "${RED}✗ DNS is NOT working${NC}"
+    fi
+    
+    echo ""
+    echo -e "${BLUE}Checking sldns service...${NC}"
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        echo -e "${GREEN}✓ $SERVICE_NAME is running${NC}"
+    else
+        echo -e "${RED}✗ $SERVICE_NAME is NOT running${NC}"
+    fi
+    
+    if pgrep -x "$PROCESS_NAME" > /dev/null; then
+        echo -e "${GREEN}✓ $PROCESS_NAME process exists${NC}"
+    else
+        echo -e "${RED}✗ $PROCESS_NAME process NOT found${NC}"
+    fi
+}
+
+quick_run() {
+    echo -e "${YELLOW}Running monitor directly (not as service)...${NC}"
+    echo "Press Ctrl+C to stop"
+    echo ""
+    run_monitor
+}
+
+show_help() {
+    echo -e "${GREEN}sldns Auto-Monitor Script${NC}"
+    echo "Checks DNS every 6 seconds, auto-restarts sldns on failure"
+    echo ""
+    echo "Usage:"
+    echo "  $0 install    - Install as auto-start service"
+    echo "  $0 run        - Run monitor directly (for testing)"
+    echo "  $0 status     - Check monitor and DNS status"
+    echo "  $0 uninstall  - Remove monitor service"
+    echo "  $0 help       - Show this help"
+    echo ""
+    echo "Examples:"
+    echo "  sudo $0 install   # Install and auto-start"
+    echo "  sudo $0 run       # Test run manually"
+    echo "  sudo $0 status    # Check if working"
+    echo ""
+    echo "Once installed, the monitor will:"
+    echo "  • Check DNS @127.0.0.1 every 6 seconds"
+    echo "  • Kill 'sldns-serve' if DNS fails"
+    echo "  • Start 'server-sldns' service"
+    echo "  • Run automatically on system boot"
+}
+
+case "${1:-}" in
+    "install")
+        install_monitor
+        ;;
+    "run"|"start")
+        quick_run
+        ;;
+    "status"|"check")
+        check_status
+        ;;
+    "uninstall"|"remove")
+        uninstall_monitor
+        ;;
+    "help"|"--help"|-h)
+        show_help
+        ;;
+    "")
+        echo -e "${YELLOW}No command specified.${NC}"
+        show_help
+        echo ""
+        echo -e "${YELLOW}Quick install:${NC}"
+        echo "  sudo $0 install"
+        ;;
+    *)
+        echo -e "${RED}Unknown command: $1${NC}"
+        show_help
+        exit 1
+        ;;
+esac
