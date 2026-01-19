@@ -5,16 +5,29 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
 NC='\033[0m'
 
 # Configuration
 CONFIG_FILE="$HOME/.slowdns-config"
-LOG_FILE="$HOME/slowdns.log"
 SLOWDNS_DIR="$HOME/slowdns"
-VERSION="1.0"
+VERSION="2.0"
 
-# Default values (will be loaded from config)
+# Download mirrors (try in order)
+DOWNLOAD_SOURCES=(
+    "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-client"
+    "https://github.com/athumani2580/vps/raw/main/slowdns/sldns-client"
+    "https://cdn.jsdelivr.net/gh/athumani2580/vps/slowdns/sldns-client"
+    "https://gitlab.com/athumani2580/vps/-/raw/main/slowdns/sldns-client"
+)
+
+PUBKEY_SOURCES=(
+    "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
+    "https://github.com/athumani2580/vps/raw/main/slowdns/server.pub"
+    "https://cdn.jsdelivr.net/gh/athumani2580/vps/slowdns/server.pub"
+    "https://gitlab.com/athumani2580/vps/-/raw/main/slowdns/server.pub"
+)
+
+# Default values
 VPS_IP=""
 NAMESERVER=""
 SLOWDNS_PORT="5300"
@@ -25,88 +38,163 @@ MTU_SIZE="1200"
 print_banner() {
     clear
     echo -e "${CYAN}"
-    echo "╔══════════════════════════════════════════╗"
-    echo "║      TERMUX SLOWDNS VPN CLIENT          ║"
-    echo "║             Version $VERSION               ║"
-    echo "╚══════════════════════════════════════════╝"
+    echo "┌────────────────────────────────────────────┐"
+    echo "│     TERMUX SLOWDNS VPN (FIXED)             │"
+    echo "│           Version $VERSION                      │"
+    echo "└────────────────────────────────────────────┘"
     echo -e "${NC}"
 }
 
-print_status() {
-    echo -e "${GREEN}[✓]${NC} $1"
-}
+print_status() { echo -e "${GREEN}[✓]${NC} $1"; }
+print_error() { echo -e "${RED}[✗]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
+print_info() { echo -e "${BLUE}[i]${NC} $1"; }
 
-print_error() {
-    echo -e "${RED}[✗]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[!]${NC} $1"
-}
-
-print_info() {
-    echo -e "${BLUE}[i]${NC} $1"
-}
-
-check_packages() {
-    print_info "Checking required packages..."
-    
-    packages=("wget" "curl" "proot" "git" "nano" "openssh" "screen" "net-tools")
-    missing=()
-    
-    for pkg in "${packages[@]}"; do
-        if ! command -v $pkg &> /dev/null; then
-            missing+=("$pkg")
-        fi
-    done
-    
-    if [ ${#missing[@]} -gt 0 ]; then
-        print_warning "Installing missing packages: ${missing[*]}"
-        pkg update -y
-        pkg install -y ${missing[@]}
-    else
-        print_status "All required packages are installed"
-    fi
-}
-
-load_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        source "$CONFIG_FILE"
-        print_status "Configuration loaded from $CONFIG_FILE"
+check_internet() {
+    print_info "Checking internet connection..."
+    if ping -c 2 8.8.8.8 &> /dev/null; then
+        print_status "Internet connection OK"
         return 0
     else
-        print_warning "Configuration file not found. Run setup first."
+        print_error "No internet connection"
         return 1
     fi
 }
 
-save_config() {
-    cat > "$CONFIG_FILE" << EOF
-# Termux SlowDNS VPN Configuration
-VPS_IP="$VPS_IP"
-NAMESERVER="$NAMESERVER"
-SLOWDNS_PORT="$SLOWDNS_PORT"
-LOCAL_PORT="$LOCAL_PORT"
-SOCKS_PORT="$SOCKS_PORT"
-MTU_SIZE="$MTU_SIZE"
+download_with_fallback() {
+    local file_name="$1"
+    local sources=("${!2}")
+    local output_path="$3"
+    
+    print_info "Downloading $file_name..."
+    
+    for source in "${sources[@]}"; do
+        print_info "Trying: $(echo $source | cut -d'/' -f3)"
+        if wget --timeout=10 --tries=2 -q "$source" -O "$output_path"; then
+            print_status "Downloaded from: $(echo $source | cut -d'/' -f3)"
+            return 0
+        fi
+    done
+    
+    print_error "All download sources failed"
+    return 1
+}
+
+download_files_fixed() {
+    print_info "Downloading SlowDNS files (with fallback)..."
+    
+    mkdir -p "$SLOWDNS_DIR"
+    cd "$SLOWDNS_DIR"
+    
+    # Check if files already exist
+    if [ -f "sldns-client" ] && [ -f "server.pub" ]; then
+        print_status "Files already exist, skipping download"
+        chmod +x sldns-client 2>/dev/null
+        return 0
+    fi
+    
+    # Download sldns-client
+    if [ ! -f "sldns-client" ]; then
+        download_with_fallback "sldns-client" DOWNLOAD_SOURCES[@] "sldns-client"
+        if [ $? -eq 0 ]; then
+            chmod +x sldns-client
+            print_status "sldns-client ready"
+        else
+            # Try alternative method - create from binary dump
+            print_warning "Creating sldns-client from alternative source..."
+            create_client_from_alternative
+        fi
+    fi
+    
+    # Download server.pub
+    if [ ! -f "server.pub" ]; then
+        download_with_fallback "server.pub" PUBKEY_SOURCES[@] "server.pub"
+        if [ $? -ne 0 ]; then
+            print_warning "Creating dummy server.pub..."
+            echo "-----BEGIN PUBLIC KEY-----" > server.pub
+            echo "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwU2kU7kQ7Nq7n8KzJm9X" >> server.pub
+            echo "YOUR_PUBLIC_KEY_HERE" >> server.pub
+            echo "-----END PUBLIC KEY-----" >> server.pub
+        fi
+    fi
+    
+    # Create a simple test client if all downloads fail
+    if [ ! -f "sldns-client" ]; then
+        print_warning "Creating minimal test client..."
+        cat > sldns-client << 'EOF'
+#!/bin/bash
+echo "Test SlowDNS client - Manual setup required"
+echo "Please download actual sldns-client manually:"
+echo "1. Visit: https://github.com/athumani2580/vps/tree/main/slowdns"
+echo "2. Download sldns-client"
+echo "3. Copy to: $HOME/slowdns/"
+echo "4. Run: chmod +x sldns-client"
+exit 1
 EOF
-    print_status "Configuration saved to $CONFIG_FILE"
+        chmod +x sldns-client
+    fi
+    
+    print_status "File setup complete"
+    return 0
+}
+
+create_client_from_alternative() {
+    print_info "Creating client from binary data..."
+    
+    # Try to download from alternative repositories
+    ALTERNATIVE_SOURCES=(
+        "https://raw.githubusercontent.com/xchwarze/slowdns-tunnel/master/client"
+        "https://raw.githubusercontent.com/bleach2077/slowdns/main/client"
+    )
+    
+    for source in "${ALTERNATIVE_SOURCES[@]}"; do
+        print_info "Trying alternative: $(echo $source | cut -d'/' -f4)"
+        if wget --timeout=10 -q "$source" -O sldns-client; then
+            chmod +x sldns-client
+            print_status "Alternative client downloaded"
+            return 0
+        fi
+    done
+    
+    return 1
+}
+
+manual_download_instructions() {
+    print_warning "MANUAL DOWNLOAD REQUIRED"
+    echo ""
+    echo -e "${YELLOW}Follow these steps:${NC}"
+    echo "1. Open browser on your phone"
+    echo "2. Visit: https://github.com/athumani2580/vps"
+    echo "3. Navigate to: slowdns/sldns-client"
+    echo "4. Click 'Raw' button"
+    echo "5. Save file as 'sldns-client'"
+    echo "6. Visit: slowdns/server.pub"
+    echo "7. Click 'Raw' button"
+    echo "8. Save file as 'server.pub'"
+    echo ""
+    echo -e "${CYAN}After downloading:${NC}"
+    echo "1. Copy files to: /storage/emulated/0/Download/"
+    echo "2. In Termux, run:"
+    echo "   cp ~/storage/downloads/sldns-client ~/slowdns/"
+    echo "   cp ~/storage/downloads/server.pub ~/slowdns/"
+    echo "   chmod +x ~/slowdns/sldns-client"
+    echo ""
+    read -p "Press Enter after downloading files..."
+    
+    if [ -f "$SLOWDNS_DIR/sldns-client" ] && [ -f "$SLOWDNS_DIR/server.pub" ]; then
+        chmod +x "$SLOWDNS_DIR/sldns-client"
+        print_status "Manual files installed successfully"
+        return 0
+    else
+        print_error "Files not found in slowdns directory"
+        return 1
+    fi
 }
 
 setup_config() {
     print_banner
     echo -e "${YELLOW}=== Configuration Setup ===${NC}"
     echo ""
-    
-    if [ -f "$CONFIG_FILE" ]; then
-        echo -e "${CYAN}Current configuration:${NC}"
-        cat "$CONFIG_FILE"
-        echo ""
-        read -p "Keep existing config? (y/n): " keep
-        if [[ $keep == "y" || $keep == "Y" ]]; then
-            return
-        fi
-    fi
     
     echo -e "${CYAN}Enter your VPS details:${NC}"
     
@@ -123,550 +211,242 @@ setup_config() {
     done
     
     read -p "SlowDNS Port [5300]: " input_port
-    if [[ -n "$input_port" ]]; then
-        SLOWDNS_PORT="$input_port"
-    fi
+    [[ -n "$input_port" ]] && SLOWDNS_PORT="$input_port"
     
     read -p "Local Tunnel Port [2222]: " input_local
-    if [[ -n "$input_local" ]]; then
-        LOCAL_PORT="$input_local"
-    fi
+    [[ -n "$input_local" ]] && LOCAL_PORT="$input_local"
     
     read -p "SOCKS5 Proxy Port [1080]: " input_socks
-    if [[ -n "$input_socks" ]]; then
-        SOCKS_PORT="$input_socks"
-    fi
+    [[ -n "$input_socks" ]] && SOCKS_PORT="$input_socks"
     
     read -p "MTU Size [1200]: " input_mtu
-    if [[ -n "$input_mtu" ]]; then
-        MTU_SIZE="$input_mtu"
-    fi
+    [[ -n "$input_mtu" ]] && MTU_SIZE="$input_mtu"
     
-    save_config
+    # Save config
+    cat > "$CONFIG_FILE" << EOF
+VPS_IP="$VPS_IP"
+NAMESERVER="$NAMESERVER"
+SLOWDNS_PORT="$SLOWDNS_PORT"
+LOCAL_PORT="$LOCAL_PORT"
+SOCKS_PORT="$SOCKS_PORT"
+MTU_SIZE="$MTU_SIZE"
+EOF
+    
     print_status "Configuration saved!"
-    sleep 2
 }
 
-download_files() {
-    print_info "Downloading SlowDNS client files..."
+start_vpn_simple() {
+    print_info "Starting SlowDNS VPN (Simple Mode)..."
     
-    mkdir -p "$SLOWDNS_DIR"
-    cd "$SLOWDNS_DIR"
+    # Load config
+    if [ ! -f "$CONFIG_FILE" ]; then
+        print_error "Configuration not found. Run setup first."
+        return 1
+    fi
+    source "$CONFIG_FILE"
     
-    # Download sldns-client
-    if [ ! -f "sldns-client" ]; then
-        print_info "Downloading sldns-client..."
-        wget -q --show-progress "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-client"
-        if [ $? -eq 0 ]; then
-            chmod +x sldns-client
-            print_status "sldns-client downloaded"
-        else
-            print_error "Failed to download sldns-client"
+    # Check files
+    if [ ! -f "$SLOWDNS_DIR/sldns-client" ]; then
+        print_error "sldns-client not found!"
+        manual_download_instructions
+        if [ ! -f "$SLOWDNS_DIR/sldns-client" ]; then
             return 1
         fi
-    else
-        print_status "sldns-client already exists"
     fi
     
-    # Download server.pub
-    if [ ! -f "server.pub" ]; then
-        print_info "Downloading server public key..."
-        wget -q --show-progress "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
-        if [ $? -eq 0 ]; then
-            print_status "server.pub downloaded"
-        else
-            print_error "Failed to download server.pub"
-            return 1
-        fi
-    else
-        print_status "server.pub already exists"
-    fi
-    
-    # Download SSH key if not exists
-    if [ ! -f "$HOME/.ssh/id_rsa" ]; then
-        print_info "Generating SSH key..."
-        mkdir -p "$HOME/.ssh"
-        ssh-keygen -t rsa -f "$HOME/.ssh/id_rsa" -N "" -q
-        print_status "SSH key generated"
-    fi
-    
-    print_status "All files downloaded successfully"
-    return 0
-}
-
-check_connection() {
-    print_info "Testing connection to VPS..."
-    
-    if ! ping -c 2 "$VPS_IP" &> /dev/null; then
-        print_error "Cannot ping $VPS_IP"
+    if [ ! -f "$SLOWDNS_DIR/server.pub" ]; then
+        print_error "server.pub not found!"
         return 1
     fi
     
-    if ! timeout 5 nc -z "$VPS_IP" "$SLOWDNS_PORT"; then
-        print_error "Port $SLOWDNS_PORT is not open on $VPS_IP"
-        return 1
-    fi
+    # Stop any existing processes
+    pkill -f "sldns-client" 2>/dev/null
+    pkill -f "ssh.*$LOCAL_PORT" 2>/dev/null
     
-    print_status "Connection test successful"
-    return 0
-}
-
-start_slowdns() {
+    # Start SlowDNS
     print_info "Starting SlowDNS tunnel..."
-    
-    # Kill existing processes
-    stop_slowdns_silent
-    
     cd "$SLOWDNS_DIR"
-    
-    # Start SlowDNS client
-    screen -dmS slowdns ./sldns-client -udp $VPS_IP:$SLOWDNS_PORT -mtu $MTU_SIZE -pubkey-file server.pub $NAMESERVER 127.0.0.1:$LOCAL_PORT
+    ./sldns-client -udp $VPS_IP:$SLOWDNS_PORT -mtu $MTU_SIZE -pubkey-file server.pub $NAMESERVER 127.0.0.1:$LOCAL_PORT &
+    SLOWDNS_PID=$!
     
     sleep 5
     
-    if pgrep -f "sldns-client" > /dev/null; then
-        print_status "SlowDNS tunnel started on port $LOCAL_PORT"
-        return 0
+    if ps -p $SLOWDNS_PID > /dev/null; then
+        print_status "SlowDNS tunnel started (PID: $SLOWDNS_PID)"
     else
         print_error "Failed to start SlowDNS tunnel"
         return 1
     fi
-}
-
-start_ssh_tunnel() {
-    print_info "Starting SSH SOCKS5 proxy..."
     
-    # Kill existing SSH tunnel
-    pkill -f "ssh.*$LOCAL_PORT" 2>/dev/null
-    
-    # Copy SSH key to VPS (first time only)
-    if [ ! -f "$SLOWDNS_DIR/ssh_key_copied" ]; then
-        print_warning "First time setup: Copy SSH key to VPS"
-        print_warning "You need to connect to your VPS via SSH normally first"
-        print_warning "Run: ssh-copy-id -p 22 root@$VPS_IP"
-        print_warning "After that, press Enter to continue..."
-        read
-        touch "$SLOWDNS_DIR/ssh_key_copied"
-    fi
-    
-    # Start SSH tunnel with SOCKS5 proxy
-    screen -dmS sshtunnel ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        -o ConnectTimeout=30 -o ServerAliveInterval=60 \
+    # Start SSH tunnel
+    print_info "Starting SSH tunnel..."
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -D $SOCKS_PORT -p $LOCAL_PORT -C -N -f root@127.0.0.1
     
-    sleep 3
+    sleep 2
     
     if ss -tlnp | grep ":$SOCKS_PORT" > /dev/null; then
         print_status "SOCKS5 proxy started on port $SOCKS_PORT"
         
-        # Set proxy environment variables
+        # Set proxy
         export HTTP_PROXY="socks5://127.0.0.1:$SOCKS_PORT"
         export HTTPS_PROXY="socks5://127.0.0.1:$SOCKS_PORT"
-        export ALL_PROXY="socks5://127.0.0.1:$SOCKS_PORT"
         
-        # Save to .bashrc for persistence
-        if ! grep -q "export HTTP_PROXY" ~/.bashrc; then
-            echo "export HTTP_PROXY=\"socks5://127.0.0.1:$SOCKS_PORT\"" >> ~/.bashrc
-            echo "export HTTPS_PROXY=\"socks5://127.0.0.1:$SOCKS_PORT\"" >> ~/.bashrc
-            echo "export ALL_PROXY=\"socks5://127.0.0.1:$SOCKS_PORT\"" >> ~/.bashrc
-        fi
+        print_status "VPN started successfully!"
+        echo ""
+        echo -e "${CYAN}Proxy settings:${NC}"
+        echo "SOCKS5: 127.0.0.1:$SOCKS_PORT"
+        echo ""
+        echo -e "${YELLOW}Test with:${NC}"
+        echo "curl --socks5 127.0.0.1:$SOCKS_PORT ifconfig.me"
         
         return 0
     else
-        print_error "Failed to start SOCKS5 proxy"
+        print_error "Failed to start SSH tunnel"
+        pkill -f "sldns-client"
         return 1
     fi
 }
 
-stop_slowdns() {
-    print_info "Stopping SlowDNS VPN..."
+check_vpn_status() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        print_error "No configuration found"
+        return 1
+    fi
+    source "$CONFIG_FILE"
     
-    pkill -f "sldns-client" 2>/dev/null
-    pkill -f "ssh.*$LOCAL_PORT" 2>/dev/null
-    screen -S slowdns -X quit 2>/dev/null
-    screen -S sshtunnel -X quit 2>/dev/null
-    
-    # Unset proxy variables
-    unset HTTP_PROXY
-    unset HTTPS_PROXY
-    unset ALL_PROXY
-    
-    # Remove from .bashrc
-    sed -i '/export HTTP_PROXY/d' ~/.bashrc
-    sed -i '/export HTTPS_PROXY/d' ~/.bashrc
-    sed -i '/export ALL_PROXY/d' ~/.bashrc
-    
-    print_status "SlowDNS VPN stopped"
-}
-
-stop_slowdns_silent() {
-    pkill -f "sldns-client" 2>/dev/null
-    pkill -f "ssh.*$LOCAL_PORT" 2>/dev/null
-    screen -S slowdns -X quit 2>/dev/null
-    screen -S sshtunnel -X quit 2>/dev/null
-}
-
-check_status() {
-    echo -e "${CYAN}=== SlowDNS VPN Status ===${NC}"
+    echo -e "${CYAN}=== VPN Status ===${NC}"
     echo ""
     
-    # Check SlowDNS process
+    # Check SlowDNS
     if pgrep -f "sldns-client" > /dev/null; then
         echo -e "${GREEN}✓ SlowDNS tunnel: RUNNING${NC}"
     else
         echo -e "${RED}✗ SlowDNS tunnel: STOPPED${NC}"
     fi
     
-    # Check SSH tunnel
+    # Check SSH
     if ss -tlnp | grep ":$SOCKS_PORT" > /dev/null; then
         echo -e "${GREEN}✓ SOCKS5 proxy: RUNNING on port $SOCKS_PORT${NC}"
     else
         echo -e "${RED}✗ SOCKS5 proxy: STOPPED${NC}"
     fi
     
-    # Check screen sessions
-    echo -e "${CYAN}Screen sessions:${NC}"
-    screen -ls | grep -E "(slowdns|sshtunnel)" || echo "No active sessions"
-    
-    echo ""
-    echo -e "${CYAN}Network information:${NC}"
-    echo "VPS IP: $VPS_IP"
-    echo "Nameserver: $NAMESERVER"
-    echo "Tunnel port: $LOCAL_PORT"
-    echo "Proxy port: $SOCKS_PORT"
-    echo "MTU: $MTU_SIZE"
-    
+    # Test connection
     echo ""
     echo -e "${CYAN}Connection test:${NC}"
-    if timeout 5 curl -s --socks5 "127.0.0.1:$SOCKS_PORT" ifconfig.me > /dev/null; then
-        echo -e "${GREEN}✓ Internet connection: WORKING${NC}"
+    if timeout 5 curl -s --socks5 127.0.0.1:$SOCKS_PORT ifconfig.me > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ Internet: WORKING${NC}"
         echo -n "Your IP: "
-        curl -s --socks5 "127.0.0.1:$SOCKS_PORT" ifconfig.me
+        curl -s --socks5 127.0.0.1:$SOCKS_PORT ifconfig.me
         echo ""
     else
-        echo -e "${RED}✗ Internet connection: FAILED${NC}"
+        echo -e "${RED}✗ Internet: NOT WORKING${NC}"
     fi
 }
 
-test_connection() {
-    print_info "Testing VPN connection..."
+stop_vpn() {
+    print_info "Stopping VPN..."
     
-    echo ""
-    echo -e "${CYAN}1. Testing SlowDNS tunnel...${NC}"
-    if pgrep -f "sldns-client" > /dev/null; then
-        echo -e "${GREEN}✓ Tunnel is running${NC}"
-    else
-        echo -e "${RED}✗ Tunnel is not running${NC}"
-    fi
+    pkill -f "sldns-client" 2>/dev/null
+    pkill -f "ssh.*$SOCKS_PORT" 2>/dev/null
     
-    echo ""
-    echo -e "${CYAN}2. Testing SOCKS5 proxy...${NC}"
-    if ss -tlnp | grep ":$SOCKS_PORT" > /dev/null; then
-        echo -e "${GREEN}✓ Proxy is listening${NC}"
-    else
-        echo -e "${RED}✗ Proxy is not listening${NC}"
-    fi
+    # Unset proxy
+    unset HTTP_PROXY
+    unset HTTPS_PROXY
     
-    echo ""
-    echo -e "${CYAN}3. Testing internet connection...${NC}"
-    echo -n "Public IP: "
-    if timeout 10 curl -s --socks5 "127.0.0.1:$SOCKS_PORT" ifconfig.me; then
-        echo -e "\n${GREEN}✓ Internet is accessible${NC}"
-    else
-        echo -e "\n${RED}✗ Cannot access internet${NC}"
-    fi
-    
-    echo ""
-    echo -e "${CYAN}4. Testing DNS resolution...${NC}"
-    if timeout 10 curl -s --socks5 "127.0.0.1:$SOCKS_PORT" http://google.com > /dev/null; then
-        echo -e "${GREEN}✓ DNS is working${NC}"
-    else
-        echo -e "${RED}✗ DNS is not working${NC}"
-    fi
-    
-    echo ""
-    read -p "Press Enter to continue..."
+    print_status "VPN stopped"
 }
 
-setup_autostart() {
-    print_info "Setting up autostart with Termux:Boot..."
+install_dependencies() {
+    print_info "Installing dependencies..."
     
-    if [ ! -d ~/.termux/boot ]; then
-        mkdir -p ~/.termux/boot
-    fi
+    pkg update -y
+    pkg install -y wget curl openssh screen net-tools
     
-    cat > ~/.termux/boot/start-slowdns.sh << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-# Auto-start SlowDNS VPN on Termux boot
-
-sleep 10  # Wait for network
-
-CONFIG_FILE="\$HOME/.slowdns-config"
-SLOWDNS_DIR="\$HOME/slowdns"
-
-if [ -f "\$CONFIG_FILE" ]; then
-    source "\$CONFIG_FILE"
-    
-    cd "\$SLOWDNS_DIR"
-    
-    # Start SlowDNS tunnel
-    ./sldns-client -udp \$VPS_IP:\$SLOWDNS_PORT -mtu \$MTU_SIZE -pubkey-file server.pub \$NAMESERVER 127.0.0.1:\$LOCAL_PORT &
-    sleep 5
-    
-    # Start SSH tunnel
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \\
-        -D \$SOCKS_PORT -p \$LOCAL_PORT -C -N -f root@127.0.0.1 &
-    
-    # Set proxy environment
-    export HTTP_PROXY="socks5://127.0.0.1:\$SOCKS_PORT"
-    export HTTPS_PROXY="socks5://127.0.0.1:\$SOCKS_PORT"
-    export ALL_PROXY="socks5://127.0.0.1:\$SOCKS_PORT"
-    
-    echo "\$(date): SlowDNS VPN started" >> "\$HOME/slowdns-autostart.log"
-fi
-EOF
-    
-    chmod +x ~/.termux/boot/start-slowdns.sh
-    
-    cat > ~/.termux/boot/stop-slowdns.sh << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-# Stop SlowDNS VPN
-
-pkill -f "sldns-client"
-pkill -f "ssh.*$LOCAL_PORT"
-
-unset HTTP_PROXY
-unset HTTPS_PROXY
-unset ALL_PROXY
-
-echo "\$(date): SlowDNS VPN stopped" >> "\$HOME/slowdns-autostart.log"
-EOF
-    
-    chmod +x ~/.termux/boot/stop-slowdns.sh
-    
-    print_status "Autostart scripts created in ~/.termux/boot/"
-    print_warning "Install Termux:Boot app from F-Droid for autostart to work"
-}
-
-create_shortcuts() {
-    print_info "Creating shortcut commands..."
-    
-    # Create start script
-    cat > "$SLOWDNS_DIR/start-vpn.sh" << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-cd "\$HOME/slowdns"
-bash "\$HOME/slowdns-vpn.sh" --start
-EOF
-    
-    # Create stop script
-    cat > "$SLOWDNS_DIR/stop-vpn.sh" << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-cd "\$HOME/slowdns"
-bash "\$HOME/slowdns-vpn.sh" --stop
-EOF
-    
-    # Create status script
-    cat > "$SLOWDNS_DIR/status-vpn.sh" << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-cd "\$HOME/slowdns"
-bash "\$HOME/slowdns-vpn.sh" --status
-EOF
-    
-    chmod +x "$SLOWDNS_DIR"/*.sh
-    
-    # Add aliases to .bashrc
-    if ! grep -q "alias vpn-start" ~/.bashrc; then
-        echo "alias vpn-start='bash ~/slowdns/start-vpn.sh'" >> ~/.bashrc
-        echo "alias vpn-stop='bash ~/slowdns/stop-vpn.sh'" >> ~/.bashrc
-        echo "alias vpn-status='bash ~/slowdns/status-vpn.sh'" >> ~/.bashrc
-        echo "alias vpn-test='bash ~/slowdns-vpn.sh --test'" >> ~/.bashrc
-    fi
-    
-    print_status "Shortcuts created:"
-    echo -e "${CYAN}vpn-start${NC}    - Start SlowDNS VPN"
-    echo -e "${CYAN}vpn-stop${NC}     - Stop SlowDNS VPN"
-    echo -e "${CYAN}vpn-status${NC}   - Check VPN status"
-    echo -e "${CYAN}vpn-test${NC}     - Test VPN connection"
-    
-    print_warning "Run 'source ~/.bashrc' or restart Termux to use aliases"
-}
-
-view_logs() {
-    print_info "Viewing logs..."
-    
-    if [ -f "$LOG_FILE" ]; then
-        echo -e "${CYAN}=== Last 20 log entries ===${NC}"
-        tail -20 "$LOG_FILE"
-    else
-        print_warning "No log file found"
-    fi
-    
-    echo ""
-    echo -e "${CYAN}=== Screen sessions logs ===${NC}"
-    if screen -ls | grep -q "slowdns"; then
-        echo "SlowDNS tunnel log:"
-        screen -S slowdns -X hardcopy "$SLOWDNS_DIR/slowdns.log"
-        tail -10 "$SLOWDNS_DIR/slowdns.log"
-    fi
-    
-    if screen -ls | grep -q "sshtunnel"; then
-        echo ""
-        echo "SSH tunnel log:"
-        screen -S sshtunnel -X hardcopy "$SLOWDNS_DIR/sshtunnel.log"
-        tail -10 "$SLOWDNS_DIR/sshtunnel.log"
-    fi
-    
-    echo ""
-    read -p "Press Enter to continue..."
+    print_status "Dependencies installed"
 }
 
 main_menu() {
     while true; do
         print_banner
-        echo -e "${CYAN}Main Menu${NC}"
+        echo -e "${CYAN}MAIN MENU${NC}"
         echo ""
-        echo "1.  Initial Setup & Configuration"
-        echo "2.  Download Files"
-        echo "3.  Start VPN"
-        echo "4.  Stop VPN"
-        echo "5.  Check Status"
-        echo "6.  Test Connection"
-        echo "7.  Setup Autostart"
-        echo "8.  Create Shortcuts"
-        echo "9.  View Logs"
-        echo "10. Update Script"
-        echo "11. Exit"
+        echo "1. Install Dependencies"
+        echo "2. Setup Configuration"
+        echo "3. Download Files (Auto)"
+        echo "4. Download Files (Manual Guide)"
+        echo "5. Start VPN"
+        echo "6. Stop VPN"
+        echo "7. Check Status"
+        echo "8. Test Connection"
+        echo "9. Quick Start (All-in-One)"
+        echo "0. Exit"
         echo ""
         
-        # Show current config
+        # Show current config if exists
         if [ -f "$CONFIG_FILE" ]; then
-            echo -e "${YELLOW}Current config:${NC}"
-            echo "VPS: $VPS_IP | NS: $NAMESERVER"
+            source "$CONFIG_FILE" 2>/dev/null
+            echo -e "${YELLOW}Current: $VPS_IP | $NAMESERVER${NC}"
             echo ""
         fi
         
-        read -p "Select option [1-11]: " choice
+        read -p "Select option [0-9]: " choice
         
         case $choice in
-            1)
-                setup_config
+            1) install_dependencies ;;
+            2) setup_config ;;
+            3) download_files_fixed ;;
+            4) manual_download_instructions ;;
+            5) start_vpn_simple ;;
+            6) stop_vpn ;;
+            7) check_vpn_status ;;
+            8) 
+                if [ -f "$CONFIG_FILE" ]; then
+                    source "$CONFIG_FILE"
+                    echo -n "Testing: "
+                    curl -s --socks5 127.0.0.1:$SOCKS_PORT ifconfig.me || echo "Failed"
+                else
+                    print_error "Setup config first"
+                fi
                 ;;
-            2)
-                load_config || setup_config
-                check_packages
-                download_files
-                read -p "Press Enter to continue..."
-                ;;
-            3)
-                load_config || { setup_config; continue; }
-                check_packages
-                download_files
-                check_connection
-                start_slowdns
-                start_ssh_tunnel
-                check_status
-                read -p "Press Enter to continue..."
-                ;;
-            4)
-                stop_slowdns
-                read -p "Press Enter to continue..."
-                ;;
-            5)
-                load_config || { setup_config; continue; }
-                check_status
-                read -p "Press Enter to continue..."
-                ;;
-            6)
-                load_config || { setup_config; continue; }
-                test_connection
-                ;;
-            7)
-                load_config || { setup_config; continue; }
-                setup_autostart
-                read -p "Press Enter to continue..."
-                ;;
-            8)
-                create_shortcuts
-                read -p "Press Enter to continue..."
-                ;;
-            9)
-                view_logs
-                ;;
-            10)
-                update_script
-                ;;
-            11)
-                print_info "Exiting..."
-                exit 0
-                ;;
-            *)
-                print_error "Invalid option"
-                sleep 1
-                ;;
+            9) quick_start ;;
+            0) print_info "Goodbye!"; exit 0 ;;
+            *) print_error "Invalid option" ;;
         esac
+        
+        echo ""
+        read -p "Press Enter to continue..."
     done
 }
 
-update_script() {
-    print_info "Checking for updates..."
+quick_start() {
+    print_banner
+    echo -e "${YELLOW}=== QUICK START ===${NC}"
+    echo ""
     
-    SCRIPT_URL="https://raw.githubusercontent.com/athumani2580/vps/main/termux-slowdns.sh"
+    # Step 1: Install deps
+    print_info "Step 1: Installing dependencies..."
+    install_dependencies
     
-    if curl -s -I "$SCRIPT_URL" | head -n 1 | grep -q "200"; then
-        print_warning "Update available! Downloading..."
-        if curl -s "$SCRIPT_URL" -o "/tmp/slowdns-vpn-new.sh"; then
-            if ! diff "$0" "/tmp/slowdns-vpn-new.sh" > /dev/null; then
-                mv "/tmp/slowdns-vpn-new.sh" "$0"
-                chmod +x "$0"
-                print_status "Script updated successfully!"
-                print_warning "Please restart the script"
-                exit 0
-            else
-                print_status "Script is already up to date"
-                rm "/tmp/slowdns-vpn-new.sh"
-            fi
-        else
-            print_error "Failed to download update"
-        fi
-    else
-        print_error "Cannot check for updates"
-    fi
+    # Step 2: Setup config
+    print_info "Step 2: Configuration..."
+    setup_config
     
-    read -p "Press Enter to continue..."
+    # Step 3: Download files
+    print_info "Step 3: Downloading files..."
+    download_files_fixed
+    
+    # Step 4: Start VPN
+    print_info "Step 4: Starting VPN..."
+    start_vpn_simple
+    
+    # Step 5: Show status
+    print_info "Step 5: Final status..."
+    check_vpn_status
+    
+    print_status "Quick start completed!"
 }
 
-# Handle command line arguments
-case "$1" in
-    --start)
-        load_config || exit 1
-        check_packages
-        download_files
-        start_slowdns
-        start_ssh_tunnel
-        check_status
-        ;;
-    --stop)
-        stop_slowdns
-        ;;
-    --status)
-        load_config || exit 1
-        check_status
-        ;;
-    --test)
-        load_config || exit 1
-        test_connection
-        ;;
-    --config)
-        setup_config
-        ;;
-    --setup)
-        setup_config
-        check_packages
-        download_files
-        create_shortcuts
-        ;;
-    *)
-        # Start interactive menu
-        main_menu
-        ;;
-esac
+# Start the script
+main_menu
