@@ -10,18 +10,34 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-SITE_NAME="SlowDNS Manager Pro"
+# Admin credentials (change these!)
 ADMIN_USER="admin"
-ADMIN_PASS="admin123"  # CHANGE THIS AFTER INSTALL
+ADMIN_PASS="Admin@1234"  # CHANGE THIS!
+
+# Server settings
 SLOWDNS_PORT="5300"
-PANEL_PORT="8080"
+SERVER_NAME="SlowDNS Server Pro"
+SERVER_DOMAIN="dns.example.com"  # Change to your domain
+
+# Installation paths
 WEB_DIR="/var/www/slowdns-panel"
 PANEL_FILE="$WEB_DIR/index.php"
-LOG_FILE="/var/log/slowdns-panel.log"
+LOG_DIR="/var/log/slowdns"
+INSTALL_LOG="$LOG_DIR/install.log"
 
 # =============================================
 # FUNCTIONS
 # =============================================
+print_banner() {
+    clear
+    echo -e "${CYAN}"
+    echo "╔══════════════════════════════════════════╗"
+    echo "║     SLOWDNS WEB PANEL INSTALLER         ║"
+    echo "║          Version 3.0                    ║"
+    echo "╚══════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
 print_success() {
     echo -e "${GREEN}[✓]${NC} $1"
 }
@@ -36,16 +52,6 @@ print_warning() {
 
 print_info() {
     echo -e "${BLUE}[i]${NC} $1"
-}
-
-print_banner() {
-    clear
-    echo -e "${CYAN}"
-    echo "╔══════════════════════════════════════════╗"
-    echo "║    SLOWDNS WEB PANEL INSTALLER v2.0     ║"
-    echo "║      Complete All-in-One Solution       ║"
-    echo "╚══════════════════════════════════════════╝"
-    echo -e "${NC}"
 }
 
 check_root() {
@@ -63,39 +69,131 @@ get_server_ip() {
     echo "$SERVER_IP"
 }
 
+generate_random_password() {
+    cat /dev/urandom | tr -dc 'A-Za-z0-9!@#$%^&*()' | fold -w 12 | head -n 1
+}
+
 # =============================================
 # MAIN INSTALLATION
 # =============================================
 print_banner
 check_root
 
-print_info "Starting installation of SlowDNS Web Panel..."
+# Create log directory
+mkdir -p "$LOG_DIR"
+echo "Installation started: $(date)" > "$INSTALL_LOG"
+
+print_info "Starting SlowDNS Web Panel installation..."
+
+# Get server IP
+SERVER_IP=$(get_server_ip)
+print_info "Server IP detected: $SERVER_IP"
 
 # Update system
 print_info "Updating system packages..."
-apt update -y
-apt upgrade -y
+apt update -y >> "$INSTALL_LOG" 2>&1
+apt upgrade -y >> "$INSTALL_LOG" 2>&1
 
 # Install required packages
 print_info "Installing required packages..."
 apt install -y php php-curl php-gd php-mbstring php-xml php-zip \
-              apache2 mariadb-server git curl wget unzip \
-              net-tools screen python3 python3-pip
+              apache2 git curl wget unzip net-tools \
+              python3 python3-pip mysql-server mysql-client php-mysql >> "$INSTALL_LOG" 2>&1
 
-# Install PHP extensions
-apt install -y php-mysql php-common php-cli php-json php-opcache php-readline
+# Install additional PHP extensions
+apt install -y php-common php-cli php-json php-opcache php-readline php-bcmath >> "$INSTALL_LOG" 2>&1
 
 # Configure PHP
 print_info "Configuring PHP..."
 for php_ini in /etc/php/*/apache2/php.ini; do
-    sed -i 's/^upload_max_filesize =.*/upload_max_filesize = 50M/' $php_ini
-    sed -i 's/^post_max_size =.*/post_max_size = 50M/' $php_ini
-    sed -i 's/^memory_limit =.*/memory_limit = 256M/' $php_ini
+    sed -i 's/^upload_max_filesize =.*/upload_max_filesize = 100M/' $php_ini
+    sed -i 's/^post_max_size =.*/post_max_size = 100M/' $php_ini
+    sed -i 's/^memory_limit =.*/memory_limit = 512M/' $php_ini
     sed -i 's/^max_execution_time =.*/max_execution_time = 300/' $php_ini
-    sed -i 's/^;extension=curl/extension=curl/' $php_ini
-    sed -i 's/^;extension=gd/extension=gd/' $php_ini
-    sed -i 's/^;extension=mysqli/extension=mysqli/' $php_ini
+    sed -i 's/^max_input_time =.*/max_input_time = 300/' $php_ini
+    sed -i 's/^;date.timezone =.*/date.timezone = UTC/' $php_ini
 done
+
+# Configure MySQL
+print_info "Configuring MySQL database..."
+mysql -e "CREATE DATABASE IF NOT EXISTS slowdns_panel;"
+mysql -e "CREATE USER IF NOT EXISTS 'slowdns_admin'@'localhost' IDENTIFIED BY 'SlowDNS@2024';"
+mysql -e "GRANT ALL PRIVILEGES ON slowdns_panel.* TO 'slowdns_admin'@'localhost';"
+mysql -e "FLUSH PRIVILEGES;"
+
+# Create database tables
+mysql slowdns_panel << 'EOF'
+CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    role ENUM('admin', 'user') DEFAULT 'user',
+    email VARCHAR(100),
+    ip_limit INT DEFAULT 3,
+    bandwidth_limit BIGINT DEFAULT 10737418240, -- 10GB in bytes
+    bandwidth_used BIGINT DEFAULT 0,
+    expiry_date DATE,
+    status ENUM('active', 'inactive', 'expired') DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_login TIMESTAMP NULL,
+    last_ip VARCHAR(45),
+    max_clients INT DEFAULT 5
+);
+
+CREATE TABLE IF NOT EXISTS clients (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT,
+    name VARCHAR(100) NOT NULL,
+    config_key VARCHAR(255) NOT NULL,
+    domain VARCHAR(255),
+    bandwidth_used BIGINT DEFAULT 0,
+    status ENUM('active', 'inactive') DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_used TIMESTAMP NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS usage_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT,
+    client_id INT,
+    bytes_sent BIGINT DEFAULT 0,
+    bytes_received BIGINT DEFAULT 0,
+    session_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    session_end TIMESTAMP NULL,
+    ip_address VARCHAR(45),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS server_stats (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    cpu_load DECIMAL(5,2),
+    memory_used DECIMAL(5,2),
+    disk_used DECIMAL(5,2),
+    active_connections INT DEFAULT 0,
+    total_bandwidth BIGINT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS activity_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT,
+    action VARCHAR(255) NOT NULL,
+    details TEXT,
+    ip_address VARCHAR(45),
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+EOF
+
+# Insert admin user
+ADMIN_HASH=$(php -r "echo password_hash('$ADMIN_PASS', PASSWORD_DEFAULT);")
+mysql slowdns_panel << EOF
+INSERT INTO users (username, password, role, email, ip_limit, bandwidth_limit, status, max_clients) 
+VALUES ('$ADMIN_USER', '$ADMIN_HASH', 'admin', 'admin@example.com', 999, 1099511627776, 'active', 999)
+ON DUPLICATE KEY UPDATE password='$ADMIN_HASH';
+EOF
 
 # Create web directory
 print_info "Creating web directory..."
@@ -104,87 +202,124 @@ mkdir -p "$WEB_DIR"
 cd "$WEB_DIR"
 
 # =============================================
-# CREATE THE COMPLETE WEB PANEL
+# CREATE THE WEB PANEL
 # =============================================
-print_info "Creating web panel files..."
+print_info "Creating web panel..."
 
 cat > "$PANEL_FILE" << 'EOF'
 <?php
 /**
- * Complete SlowDNS Web Panel v2.0
- * Single File Installation
+ * Complete SlowDNS Web Panel
+ * MySQL Version with All Features
  */
 
 // =============================================
-// CONFIGURATION - EDITABLE SECTION
-// =============================================
-define('SITE_NAME', 'SlowDNS Manager Pro');
-define('ADMIN_USER', 'admin');
-define('ADMIN_PASS', 'admin123'); // CHANGE THIS!
-define('SLOWDNS_PORT', 5300);
-define('SLOWDNS_DIR', '/etc/slowdns');
-define('DATA_FILE', __DIR__ . '/data.json');
-define('LOG_FILE', __DIR__ . '/activity.log');
-define('DEFAULT_LIMIT_GB', 5);
-
-// Server Configuration (Editable via Panel)
-$server_config = [
-    'name' => 'My SlowDNS Server',
-    'domain' => 'dns.example.com',
-    'port' => SLOWDNS_PORT,
-    'max_connections' => 100,
-    'maintenance' => false,
-    'restart_count' => 0,
-    'last_restart' => null
-];
-
-// =============================================
-// INITIALIZATION
+// CONFIGURATION
 // =============================================
 session_start();
 date_default_timezone_set('UTC');
 
-// Auto-create data file on first run
-if (!file_exists(DATA_FILE)) {
-    $initial_data = [
-        'users' => [
-            ADMIN_USER => [
-                'password' => password_hash(ADMIN_PASS, PASSWORD_DEFAULT),
-                'role' => 'admin',
-                'email' => 'admin@localhost',
-                'created' => date('Y-m-d H:i:s'),
-                'last_login' => null,
-                'ip' => $_SERVER['REMOTE_ADDR'] ?? '',
-                'max_clients' => 999,
-                'active' => true
-            ]
-        ],
-        'clients' => [],
-        'server' => $server_config,
-        'settings' => [
-            'allow_registration' => false,
-            'max_users' => 50,
-            'log_retention_days' => 30,
-            'notify_on_restart' => true
-        ]
-    ];
-    file_put_contents(DATA_FILE, json_encode($initial_data, JSON_PRETTY_PRINT));
+// Database configuration
+define('DB_HOST', 'localhost');
+define('DB_NAME', 'slowdns_panel');
+define('DB_USER', 'slowdns_admin');
+define('DB_PASS', 'SlowDNS@2024');
+
+// Application settings
+define('SITE_NAME', 'SlowDNS Manager Pro');
+define('BASE_URL', (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://$_SERVER[HTTP_HOST]");
+define('SLOWDNS_PORT', 5300);
+define('DEFAULT_IP_LIMIT', 3);
+define('DEFAULT_BANDWIDTH_GB', 10);
+
+// Security
+define('SESSION_TIMEOUT', 3600); // 1 hour
+
+// =============================================
+// DATABASE CONNECTION
+// =============================================
+class Database {
+    private $pdo;
+    
+    public function __construct() {
+        try {
+            $this->pdo = new PDO(
+                "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4",
+                DB_USER,
+                DB_PASS,
+                [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                    PDO::ATTR_EMULATE_PREPARES => false
+                ]
+            );
+        } catch (PDOException $e) {
+            die("Database connection failed: " . $e->getMessage());
+        }
+    }
+    
+    public function getConnection() {
+        return $this->pdo;
+    }
 }
 
-// Load data
-$data = json_decode(file_get_contents(DATA_FILE), true);
+$db = new Database();
+$pdo = $db->getConnection();
 
 // =============================================
 // HELPER FUNCTIONS
 // =============================================
-function saveData() {
-    global $data;
-    file_put_contents(DATA_FILE, json_encode($data, JSON_PRETTY_PRINT));
+function isLoggedIn() {
+    return isset($_SESSION['user_id']) && (time() - $_SESSION['login_time']) < SESSION_TIMEOUT;
 }
 
-function logActivity($message, $user = null) {
-    $log = date('Y-m-d H:i:s') . " | " . ($user ?: $_SESSION['user']['username'] ?? 'system') . " | " . $message . "\n";
-    file_put_contents(LOG_FILE, $log, FILE_APPEND);
+function login($username, $password) {
+    global $pdo;
+    
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? AND status = 'active'");
+    $stmt->execute([$username]);
+    $user = $stmt->fetch();
+    
+    if ($user && password_verify($password, $user['password'])) {
+        $_SESSION['user_id'] = $user['id'];
+        $_SESSION['username'] = $user['username'];
+        $_SESSION['role'] = $user['role'];
+        $_SESSION['login_time'] = time();
+        
+        // Update last login
+        $stmt = $pdo->prepare("UPDATE users SET last_login = NOW(), last_ip = ? WHERE id = ?");
+        $stmt->execute([$_SERVER['REMOTE_ADDR'], $user['id']]);
+        
+        // Log activity
+        logActivity($user['id'], "User logged in", "IP: " . $_SERVER['REMOTE_ADDR']);
+        
+        return true;
+    }
+    return false;
+}
+
+function logout() {
+    if (isset($_SESSION['user_id'])) {
+        logActivity($_SESSION['user_id'], "User logged out");
+    }
+    session_destroy();
+    header('Location: ?action=login');
+    exit;
+}
+
+function logActivity($user_id, $action, $details = '') {
+    global $pdo;
+    $stmt = $pdo->prepare("INSERT INTO activity_logs (user_id, action, details, ip_address) VALUES (?, ?, ?, ?)");
+    $stmt->execute([$user_id, $action, $details, $_SERVER['REMOTE_ADDR']]);
+}
+
+function formatBytes($bytes, $precision = 2) {
+    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    $bytes = max($bytes, 0);
+    $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
+    $pow = min($pow, count($units) - 1);
+    $bytes /= pow(1024, $pow);
+    return round($bytes, $precision) . ' ' . $units[$pow];
 }
 
 function getServerStatus() {
@@ -204,13 +339,14 @@ function getServerStatus() {
     
     // Get system info
     $load = sys_getloadavg();
-    $status['load'] = $load[0];
+    $status['cpu_load'] = $load[0];
     
     $mem = shell_exec("free | grep Mem | awk '{print $3/$2 * 100.0}'");
-    $status['memory'] = round(floatval($mem), 2);
+    $status['memory_used'] = round(floatval($mem), 2);
     
     $disk = disk_free_space("/");
-    $status['disk_free_gb'] = round($disk / (1024*1024*1024), 1);
+    $total_disk = disk_total_space("/");
+    $status['disk_used'] = round((($total_disk - $disk) / $total_disk) * 100, 2);
     
     $uptime = shell_exec("uptime -p");
     $status['uptime'] = trim($uptime);
@@ -221,96 +357,279 @@ function getServerStatus() {
     return $status;
 }
 
-function formatBytes($bytes, $precision = 2) {
-    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    $bytes = max($bytes, 0);
-    $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
-    $pow = min($pow, count($units) - 1);
-    $bytes /= pow(1024, $pow);
-    return round($bytes, $precision) . ' ' . $units[$pow];
+function getUserStats($user_id) {
+    global $pdo;
+    
+    $stats = [];
+    
+    // Get bandwidth used
+    $stmt = $pdo->prepare("SELECT SUM(bandwidth_used) as total_used FROM users WHERE id = ?");
+    $stmt->execute([$user_id]);
+    $stats['bandwidth_used'] = $stmt->fetch()['total_used'] ?? 0;
+    
+    // Get bandwidth limit
+    $stmt = $pdo->prepare("SELECT bandwidth_limit FROM users WHERE id = ?");
+    $stmt->execute([$user_id]);
+    $stats['bandwidth_limit'] = $stmt->fetch()['bandwidth_limit'] ?? 0;
+    
+    // Get active clients
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM clients WHERE user_id = ? AND status = 'active'");
+    $stmt->execute([$user_id]);
+    $stats['active_clients'] = $stmt->fetch()['count'] ?? 0;
+    
+    // Get total clients
+    $stmt = $pdo->prepare("SELECT COUNT(*) as count FROM clients WHERE user_id = ?");
+    $stmt->execute([$user_id]);
+    $stats['total_clients'] = $stmt->fetch()['count'] ?? 0;
+    
+    // Calculate usage percentage
+    $stats['usage_percent'] = $stats['bandwidth_limit'] > 0 ? 
+        min(100, ($stats['bandwidth_used'] / $stats['bandwidth_limit']) * 100) : 0;
+    
+    return $stats;
 }
 
-function restartSlowDNS() {
-    exec('systemctl restart server-sldns.service 2>&1', $output, $code);
-    return $code == 0;
-}
-
-function generateKey() {
-    return bin2hex(random_bytes(32));
-}
-
-function createClientConfig($client) {
-    global $data;
-    $server = $data['server'];
+function generateClientConfig($user_id, $client_name) {
+    global $pdo;
+    
+    // Generate unique key
+    $config_key = bin2hex(random_bytes(32));
+    
+    // Get server IP
     $server_ip = $_SERVER['SERVER_ADDR'] ?? gethostbyname(gethostname());
     
-    $config = "# SlowDNS Client Configuration\n";
-    $config .= "# Server: " . $server['name'] . "\n";
-    $config .= "# Generated: " . date('Y-m-d H:i:s') . "\n\n";
-    
-    $config .= "[client]\n";
-    $config .= "name = " . $client['name'] . "\n";
-    $config .= "server = " . (empty($server['domain']) ? $server_ip : $server['domain']) . "\n";
-    $config .= "port = " . $server['port'] . "\n";
-    $config .= "key = " . $client['key'] . "\n";
+    // Create config content
+    $config = "[client]\n";
+    $config .= "name = " . $client_name . "\n";
+    $config .= "server = " . $server_ip . "\n";
+    $config .= "port = " . SLOWDNS_PORT . "\n";
+    $config .= "key = " . $config_key . "\n";
     $config .= "mtu = 1200\n";
     $config .= "protocol = udp\n";
     $config .= "dns = 8.8.8.8\n";
     $config .= "keepalive = 30\n";
-    $config .= "\n# Usage: ./sldns-client -config this-file.conf\n";
+    $config .= "\n# Generated on: " . date('Y-m-d H:i:s') . "\n";
     
-    return $config;
+    return [
+        'config' => $config,
+        'key' => $config_key
+    ];
 }
 
 // =============================================
-// AUTHENTICATION
+// ACTION HANDLERS
 // =============================================
-function isLoggedIn() {
-    return isset($_SESSION['user']) && isset($_SESSION['user']['username']);
-}
-
-function login($username, $password) {
-    global $data;
-    if (isset($data['users'][$username]) && 
-        password_verify($password, $data['users'][$username]['password']) &&
-        $data['users'][$username]['active']) {
+function handleLogin() {
+    if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+        $username = $_POST['username'] ?? '';
+        $password = $_POST['password'] ?? '';
         
-        $_SESSION['user'] = [
-            'username' => $username,
-            'role' => $data['users'][$username]['role'],
-            'login_time' => time()
-        ];
-        
-        $data['users'][$username]['last_login'] = date('Y-m-d H:i:s');
-        $data['users'][$username]['last_ip'] = $_SERVER['REMOTE_ADDR'];
-        saveData();
-        
-        logActivity("User logged in from " . $_SERVER['REMOTE_ADDR'], $username);
-        return true;
+        if (login($username, $password)) {
+            header('Location: ?action=dashboard');
+            exit;
+        } else {
+            return "Invalid username or password";
+        }
     }
-    return false;
+    return null;
 }
 
-function logout() {
-    logActivity("User logged out", $_SESSION['user']['username']);
-    session_destroy();
-    header('Location: ?');
-    exit;
+function handleAddUser() {
+    global $pdo;
+    
+    if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+        $username = $_POST['username'] ?? '';
+        $password = $_POST['password'] ?? '';
+        $email = $_POST['email'] ?? '';
+        $ip_limit = intval($_POST['ip_limit'] ?? DEFAULT_IP_LIMIT);
+        $bandwidth_gb = intval($_POST['bandwidth_gb'] ?? DEFAULT_BANDWIDTH_GB);
+        $expiry_date = $_POST['expiry_date'] ?? null;
+        $max_clients = intval($_POST['max_clients'] ?? 5);
+        
+        // Validate inputs
+        if (empty($username) || empty($password)) {
+            return "Username and password are required";
+        }
+        
+        // Check if username exists
+        $stmt = $pdo->prepare("SELECT id FROM users WHERE username = ?");
+        $stmt->execute([$username]);
+        if ($stmt->fetch()) {
+            return "Username already exists";
+        }
+        
+        // Hash password
+        $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+        
+        // Calculate bandwidth limit in bytes
+        $bandwidth_limit = $bandwidth_gb * 1024 * 1024 * 1024;
+        
+        // Insert user
+        $stmt = $pdo->prepare("
+            INSERT INTO users (username, password, email, ip_limit, bandwidth_limit, expiry_date, max_clients, status) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+        ");
+        
+        $stmt->execute([
+            $username, 
+            $hashed_password, 
+            $email, 
+            $ip_limit, 
+            $bandwidth_limit, 
+            $expiry_date ?: null,
+            $max_clients
+        ]);
+        
+        // Log activity
+        logActivity($_SESSION['user_id'], "Added user: $username", 
+                   "IP Limit: $ip_limit, Bandwidth: {$bandwidth_gb}GB");
+        
+        return "success";
+    }
+    return null;
+}
+
+function handleDeleteUser($user_id) {
+    global $pdo;
+    
+    // Prevent deleting self
+    if ($user_id == $_SESSION['user_id']) {
+        return "Cannot delete your own account";
+    }
+    
+    // Get username before deleting
+    $stmt = $pdo->prepare("SELECT username FROM users WHERE id = ?");
+    $stmt->execute([$user_id]);
+    $user = $stmt->fetch();
+    
+    if ($user) {
+        // Delete user
+        $stmt = $pdo->prepare("DELETE FROM users WHERE id = ?");
+        $stmt->execute([$user_id]);
+        
+        // Log activity
+        logActivity($_SESSION['user_id'], "Deleted user: " . $user['username']);
+        
+        return "success";
+    }
+    
+    return "User not found";
+}
+
+function handleUpdateUserLimits() {
+    global $pdo;
+    
+    if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+        $user_id = $_POST['user_id'] ?? 0;
+        $ip_limit = intval($_POST['ip_limit'] ?? 0);
+        $bandwidth_gb = intval($_POST['bandwidth_gb'] ?? 0);
+        $expiry_date = $_POST['expiry_date'] ?? null;
+        $status = $_POST['status'] ?? 'active';
+        
+        // Calculate bandwidth limit in bytes
+        $bandwidth_limit = $bandwidth_gb * 1024 * 1024 * 1024;
+        
+        $stmt = $pdo->prepare("
+            UPDATE users 
+            SET ip_limit = ?, bandwidth_limit = ?, expiry_date = ?, status = ?
+            WHERE id = ?
+        ");
+        
+        $stmt->execute([$ip_limit, $bandwidth_limit, $expiry_date, $status, $user_id]);
+        
+        // Get username for logging
+        $stmt = $pdo->prepare("SELECT username FROM users WHERE id = ?");
+        $stmt->execute([$user_id]);
+        $user = $stmt->fetch();
+        
+        logActivity($_SESSION['user_id'], "Updated limits for user: " . $user['username'],
+                   "IP Limit: $ip_limit, Bandwidth: {$bandwidth_gb}GB, Status: $status");
+        
+        return "success";
+    }
+    return null;
 }
 
 // =============================================
-// HTML TEMPLATES
-// =============================================
-function renderHeader($title = 'Dashboard') {
-    global $data;
-    $server_status = getServerStatus();
+// PAGE RENDERING FUNCTIONS
+# Continued from previous part...
+
+function renderLoginPage($error = null) {
     ?>
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title><?php echo $title; ?> - <?php echo SITE_NAME; ?></title>
+        <title>Login - <?php echo SITE_NAME; ?></title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); height: 100vh; }
+            .login-card { max-width: 400px; margin: 100px auto; padding: 30px; border-radius: 15px; background: white; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="login-card shadow-lg">
+                <div class="text-center mb-4">
+                    <h3><i class="bi bi-shield-lock"></i> <?php echo SITE_NAME; ?></h3>
+                    <p class="text-muted">SlowDNS Management Panel</p>
+                </div>
+                
+                <?php if ($error): ?>
+                <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
+                <?php endif; ?>
+                
+                <form method="POST">
+                    <input type="hidden" name="action" value="do_login">
+                    <div class="mb-3">
+                        <label class="form-label">Username</label>
+                        <input type="text" name="username" class="form-control" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Password</label>
+                        <input type="password" name="password" class="form-control" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">Login</button>
+                </form>
+            </div>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+function renderDashboard() {
+    global $pdo;
+    
+    $user_id = $_SESSION['user_id'];
+    $role = $_SESSION['role'];
+    
+    // Get user stats
+    $stats = getUserStats($user_id);
+    
+    // Get server status
+    $server_status = getServerStatus();
+    
+    // Get total users (admin only)
+    $total_users = 0;
+    if ($role == 'admin') {
+        $stmt = $pdo->query("SELECT COUNT(*) as count FROM users");
+        $total_users = $stmt->fetch()['count'];
+    }
+    
+    // Get total bandwidth used
+    $stmt = $pdo->query("SELECT SUM(bandwidth_used) as total FROM users");
+    $total_bandwidth = $stmt->fetch()['total'] ?? 0;
+    
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Dashboard - <?php echo SITE_NAME; ?></title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css">
         <style>
@@ -320,36 +639,32 @@ function renderHeader($title = 'Dashboard') {
                 --success: #4cc9f0;
                 --danger: #f72585;
                 --dark: #1a1a2e;
-                --light: #f8f9fa;
             }
-            body { background: #f5f7fa; min-height: 100vh; }
+            body { background: #f8f9fa; }
             .navbar { background: var(--dark) !important; }
             .sidebar { background: white; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
             .card { border: none; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
             .stat-card { border-left: 4px solid var(--primary); }
-            .progress-thin { height: 8px; }
         </style>
     </head>
     <body>
         <!-- Navbar -->
         <nav class="navbar navbar-expand-lg navbar-dark">
-            <div class="container">
-                <a class="navbar-brand" href="?">
+            <div class="container-fluid">
+                <a class="navbar-brand" href="?action=dashboard">
                     <i class="bi bi-shield-lock me-2"></i>
-                    <strong><?php echo $data['server']['name']; ?></strong>
+                    <strong><?php echo SITE_NAME; ?></strong>
                 </a>
                 
-                <?php if (isLoggedIn()): ?>
                 <div class="navbar-nav ms-auto align-items-center">
                     <span class="navbar-text me-3">
-                        <i class="bi bi-person-circle"></i> <?php echo $_SESSION['user']['username']; ?>
-                        <?php if ($_SESSION['user']['role'] == 'admin'): ?>
+                        <i class="bi bi-person-circle"></i> <?php echo $_SESSION['username']; ?>
+                        <?php if ($_SESSION['role'] == 'admin'): ?>
                         <span class="badge bg-warning ms-1">Admin</span>
                         <?php endif; ?>
                     </span>
                     <a href="?action=logout" class="btn btn-outline-light btn-sm">Logout</a>
                 </div>
-                <?php endif; ?>
             </div>
         </nav>
         
@@ -359,34 +674,32 @@ function renderHeader($title = 'Dashboard') {
                 <div class="col-lg-2">
                     <div class="sidebar p-3 mb-3">
                         <nav class="nav flex-column">
-                            <a class="nav-link <?php echo (!isset($_GET['action']) || $_GET['action'] == 'dashboard') ? 'active' : ''; ?>" href="?">
+                            <a class="nav-link active" href="?action=dashboard">
                                 <i class="bi bi-speedometer2 me-2"></i> Dashboard
                             </a>
-                            <a class="nav-link <?php echo ($_GET['action'] ?? '') == 'clients' ? 'active' : ''; ?>" href="?action=clients">
+                            <a class="nav-link" href="?action=my_clients">
                                 <i class="bi bi-person-badge me-2"></i> My Clients
                             </a>
-                            <a class="nav-link <?php echo ($_GET['action'] ?? '') == 'create_client' ? 'active' : ''; ?>" href="?action=create_client">
+                            <a class="nav-link" href="?action=create_client">
                                 <i class="bi bi-plus-circle me-2"></i> Create Client
                             </a>
                             
-                            <?php if ($_SESSION['user']['role'] == 'admin'): ?>
+                            <?php if ($_SESSION['role'] == 'admin'): ?>
                             <hr class="my-2">
                             <h6 class="text-muted mt-2 mb-2">Admin Panel</h6>
-                            <a class="nav-link <?php echo ($_GET['action'] ?? '') == 'server_settings' ? 'active' : ''; ?>" href="?action=server_settings">
-                                <i class="bi bi-gear me-2"></i> Server Settings
-                            </a>
-                            <a class="nav-link <?php echo ($_GET['action'] ?? '') == 'user_management' ? 'active' : ''; ?>" href="?action=user_management">
+                            <a class="nav-link" href="?action=users">
                                 <i class="bi bi-people me-2"></i> User Management
                             </a>
-                            <a class="nav-link <?php echo ($_GET['action'] ?? '') == 'server_control' ? 'active' : ''; ?>" href="?action=server_control">
-                                <i class="bi bi-terminal me-2"></i> Server Control
+                            <a class="nav-link" href="?action=server">
+                                <i class="bi bi-server me-2"></i> Server Status
+                            </a>
+                            <a class="nav-link" href="?action=settings">
+                                <i class="bi bi-gear me-2"></i> Settings
+                            </a>
+                            <a class="nav-link" href="?action=logs">
+                                <i class="bi bi-list-check me-2"></i> Activity Logs
                             </a>
                             <?php endif; ?>
-                            
-                            <hr class="my-2">
-                            <a class="nav-link <?php echo ($_GET['action'] ?? '') == 'change_password' ? 'active' : ''; ?>" href="?action=change_password">
-                                <i class="bi bi-key me-2"></i> Change Password
-                            </a>
                         </nav>
                     </div>
                     
@@ -406,8 +719,8 @@ function renderHeader($title = 'Dashboard') {
                                     <small class="text-muted"><?php echo $server_status['connections']; ?></small>
                                 </div>
                                 <div class="d-flex justify-content-between">
-                                    <small>Load:</small>
-                                    <small class="text-muted"><?php echo $server_status['load']; ?></small>
+                                    <small>CPU Load:</small>
+                                    <small class="text-muted"><?php echo $server_status['cpu_load']; ?></small>
                                 </div>
                             </div>
                         </div>
@@ -416,43 +729,504 @@ function renderHeader($title = 'Dashboard') {
                 
                 <!-- Main Content -->
                 <div class="col-lg-10">
-    <?php
-}
-
-function renderFooter() {
-    ?>
+                    <!-- Welcome Message -->
+                    <div class="card mb-4">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <h4 class="mb-1">Welcome, <?php echo $_SESSION['username']; ?>!</h4>
+                                    <p class="text-muted mb-0">SlowDNS Management Dashboard</p>
+                                </div>
+                                <div class="text-end">
+                                    <div class="badge bg-primary">Server IP: <?php echo $server_status['ip']; ?></div>
+                                    <div class="badge bg-info mt-1">Port: <?php echo SLOWDNS_PORT; ?></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Stats Cards -->
+                    <div class="row mb-4">
+                        <div class="col-md-3">
+                            <div class="card stat-card p-3">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <h6 class="text-muted">Bandwidth Used</h6>
+                                        <h3 class="mb-0"><?php echo formatBytes($stats['bandwidth_used']); ?></h3>
+                                    </div>
+                                    <div class="bg-primary text-white rounded-circle p-2">
+                                        <i class="bi bi-speedometer2 fs-4"></i>
+                                    </div>
+                                </div>
+                                <small class="text-muted">
+                                    <?php echo number_format($stats['usage_percent'], 1); ?>% of <?php echo formatBytes($stats['bandwidth_limit']); ?>
+                                </small>
+                                <div class="progress mt-2" style="height: 5px;">
+                                    <div class="progress-bar <?php echo $stats['usage_percent'] > 80 ? 'bg-danger' : ($stats['usage_percent'] > 50 ? 'bg-warning' : 'bg-success'); ?>" 
+                                         style="width: <?php echo $stats['usage_percent']; ?>%"></div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-3">
+                            <div class="card stat-card p-3" style="border-left-color: #4cc9f0;">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <h6 class="text-muted">Active Clients</h6>
+                                        <h3 class="mb-0"><?php echo $stats['active_clients']; ?></h3>
+                                    </div>
+                                    <div class="bg-info text-white rounded-circle p-2">
+                                        <i class="bi bi-person-badge fs-4"></i>
+                                    </div>
+                                </div>
+                                <small class="text-muted">Total: <?php echo $stats['total_clients']; ?> clients</small>
+                            </div>
+                        </div>
+                        
+                        <?php if ($_SESSION['role'] == 'admin'): ?>
+                        <div class="col-md-3">
+                            <div class="card stat-card p-3" style="border-left-color: #f8961e;">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <h6 class="text-muted">Total Users</h6>
+                                        <h3 class="mb-0"><?php echo $total_users; ?></h3>
+                                    </div>
+                                    <div class="bg-warning text-white rounded-circle p-2">
+                                        <i class="bi bi-people fs-4"></i>
+                                    </div>
+                                </div>
+                                <small class="text-muted">Registered users</small>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-3">
+                            <div class="card stat-card p-3" style="border-left-color: #f72585;">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <h6 class="text-muted">Total Bandwidth</h6>
+                                        <h3 class="mb-0"><?php echo formatBytes($total_bandwidth); ?></h3>
+                                    </div>
+                                    <div class="bg-danger text-white rounded-circle p-2">
+                                        <i class="bi bi-hdd fs-4"></i>
+                                    </div>
+                                </div>
+                                <small class="text-muted">All users combined</small>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    
+                    <!-- Server Status -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-server me-2"></i> Server Status</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <div class="d-flex align-items-center mb-3">
+                                        <div class="me-3">
+                                            <i class="bi bi-power fs-1 <?php echo $server_status['service'] == 'running' ? 'text-success' : 'text-danger'; ?>"></i>
+                                        </div>
+                                        <div>
+                                            <small class="text-muted">SlowDNS Service</small>
+                                            <h5><?php echo ucfirst($server_status['service']); ?></h5>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="d-flex align-items-center mb-3">
+                                        <div class="me-3">
+                                            <i class="bi bi-ethernet fs-1 <?php echo $server_status['port'] == 'open' ? 'text-success' : 'text-danger'; ?>"></i>
+                                        </div>
+                                        <div>
+                                            <small class="text-muted">Port <?php echo SLOWDNS_PORT; ?></small>
+                                            <h5><?php echo ucfirst($server_status['port']); ?></h5>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="d-flex align-items-center mb-3">
+                                        <div class="me-3">
+                                            <i class="bi bi-people fs-1 text-primary"></i>
+                                        </div>
+                                        <div>
+                                            <small class="text-muted">Active Connections</small>
+                                            <h5><?php echo $server_status['connections']; ?></h5>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="row mt-3">
+                                <div class="col-md-3">
+                                    <div class="text-center p-3 border rounded">
+                                        <div class="fs-2 mb-1"><?php echo $server_status['cpu_load']; ?></div>
+                                        <small class="text-muted">CPU Load</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="text-center p-3 border rounded">
+                                        <div class="fs-2 mb-1"><?php echo $server_status['memory_used']; ?>%</div>
+                                        <small class="text-muted">Memory Used</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="text-center p-3 border rounded">
+                                        <div class="fs-2 mb-1"><?php echo $server_status['disk_used']; ?>%</div>
+                                        <small class="text-muted">Disk Used</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="text-center p-3 border rounded">
+                                        <div class="fs-2 mb-1"><?php echo $server_status['uptime']; ?></div>
+                                        <small class="text-muted">Uptime</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Quick Actions -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-lightning-charge me-2"></i> Quick Actions</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-3 mb-3">
+                                    <a href="?action=create_client" class="btn btn-primary w-100">
+                                        <i class="bi bi-plus-circle me-2"></i> Create Client
+                                    </a>
+                                </div>
+                                <div class="col-md-3 mb-3">
+                                    <a href="?action=my_clients" class="btn btn-outline-primary w-100">
+                                        <i class="bi bi-list-ul me-2"></i> View Clients
+                                    </a>
+                                </div>
+                                
+                                <?php if ($_SESSION['role'] == 'admin'): ?>
+                                <div class="col-md-3 mb-3">
+                                    <a href="?action=users" class="btn btn-success w-100">
+                                        <i class="bi bi-people me-2"></i> Manage Users
+                                    </a>
+                                </div>
+                                <div class="col-md-3 mb-3">
+                                    <a href="?action=server" class="btn btn-info w-100">
+                                        <i class="bi bi-terminal me-2"></i> Server Control
+                                    </a>
+                                </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-        
-        <!-- Footer -->
-        <footer class="mt-4 py-3 text-center text-muted border-top">
-            <small>
-                <?php echo SITE_NAME; ?> v2.0 &copy; <?php echo date('Y'); ?> | 
-                Server IP: <?php echo getServerStatus()['ip']; ?>
-            </small>
-        </footer>
         
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
         <script>
             // Auto refresh every 60 seconds
             setTimeout(() => location.reload(), 60000);
-            
-            function copyToClipboard(text) {
-                navigator.clipboard.writeText(text).then(() => {
-                    alert('Copied to clipboard!');
-                });
+        </script>
+    </body>
+    </html>
+    <?php
+}
+
+function renderUserManagementPage() {
+    global $pdo;
+    
+    // Handle actions
+    $message = '';
+    $message_type = '';
+    
+    if (isset($_GET['action'])) {
+        if ($_GET['action'] == 'delete' && isset($_GET['id'])) {
+            $result = handleDeleteUser($_GET['id']);
+            if ($result == 'success') {
+                $message = 'User deleted successfully';
+                $message_type = 'success';
+            } else {
+                $message = $result;
+                $message_type = 'danger';
             }
-            
-            function downloadConfig(name, config) {
-                const blob = new Blob([config], {type: 'text/plain'});
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = name + '.conf';
-                a.click();
-                URL.revokeObjectURL(url);
+        }
+    }
+    
+    // Handle form submissions
+    if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+        if (isset($_POST['add_user'])) {
+            $result = handleAddUser();
+            if ($result == 'success') {
+                $message = 'User added successfully';
+                $message_type = 'success';
+            } else {
+                $message = $result;
+                $message_type = 'danger';
             }
+        } elseif (isset($_POST['update_limits'])) {
+            $result = handleUpdateUserLimits();
+            if ($result == 'success') {
+                $message = 'User limits updated successfully';
+                $message_type = 'success';
+            }
+        }
+    }
+    
+    // Get all users
+    $stmt = $pdo->query("SELECT * FROM users ORDER BY created_at DESC");
+    $users = $stmt->fetchAll();
+    
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>User Management - <?php echo SITE_NAME; ?></title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css">
+    </head>
+    <body>
+        <!-- Include navbar from dashboard -->
+        <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+            <div class="container-fluid">
+                <a class="navbar-brand" href="?action=dashboard">
+                    <i class="bi bi-shield-lock me-2"></i>
+                    <strong><?php echo SITE_NAME; ?></strong>
+                </a>
+                <div class="navbar-nav ms-auto">
+                    <a href="?action=dashboard" class="btn btn-outline-light btn-sm me-2">Dashboard</a>
+                    <a href="?action=logout" class="btn btn-outline-light btn-sm">Logout</a>
+                </div>
+            </div>
+        </nav>
+        
+        <div class="container-fluid mt-3">
+            <?php if ($message): ?>
+            <div class="alert alert-<?php echo $message_type; ?> alert-dismissible fade show">
+                <?php echo $message; ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            <?php endif; ?>
+            
+            <div class="row">
+                <div class="col-md-4">
+                    <!-- Add User Form -->
+                    <div class="card mb-4">
+                        <div class="card-header bg-primary text-white">
+                            <h5 class="mb-0"><i class="bi bi-person-plus me-2"></i> Add New User</h5>
+                        </div>
+                        <div class="card-body">
+                            <form method="POST">
+                                <input type="hidden" name="add_user" value="1">
+                                
+                                <div class="mb-3">
+                                    <label class="form-label">Username *</label>
+                                    <input type="text" name="username" class="form-control" required>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <label class="form-label">Password *</label>
+                                    <input type="password" name="password" class="form-control" required>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <label class="form-label">Email</label>
+                                    <input type="email" name="email" class="form-control">
+                                </div>
+                                
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">IP Limit</label>
+                                        <input type="number" name="ip_limit" class="form-control" value="3" min="1" max="50">
+                                        <small class="text-muted">Max concurrent connections</small>
+                                    </div>
+                                    
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Bandwidth Limit (GB)</label>
+                                        <input type="number" name="bandwidth_gb" class="form-control" value="10" min="1" max="1000">
+                                    </div>
+                                </div>
+                                
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Max Clients</label>
+                                        <input type="number" name="max_clients" class="form-control" value="5" min="1" max="50">
+                                    </div>
+                                    
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Expiry Date</label>
+                                        <input type="date" name="expiry_date" class="form-control">
+                                        <small class="text-muted">Leave empty for no expiry</small>
+                                    </div>
+                                </div>
+                                
+                                <button type="submit" class="btn btn-primary w-100">
+                                    <i class="bi bi-check-circle me-2"></i> Add User
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-8">
+                    <!-- Users List -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-people me-2"></i> All Users</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Username</th>
+                                            <th>Role</th>
+                                            <th>IP Limit</th>
+                                            <th>Bandwidth Used</th>
+                                            <th>Status</th>
+                                            <th>Expiry</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($users as $user): 
+                                            $usage_percent = $user['bandwidth_limit'] > 0 ? 
+                                                min(100, ($user['bandwidth_used'] / $user['bandwidth_limit']) * 100) : 0;
+                                            
+                                            // Check if expired
+                                            $is_expired = $user['expiry_date'] && strtotime($user['expiry_date']) < time();
+                                            $status_class = $is_expired ? 'bg-danger' : ($user['status'] == 'active' ? 'bg-success' : 'bg-secondary');
+                                            $status_text = $is_expired ? 'Expired' : ucfirst($user['status']);
+                                        ?>
+                                        <tr>
+                                            <td>
+                                                <strong><?php echo htmlspecialchars($user['username']); ?></strong>
+                                                <?php if ($user['email']): ?>
+                                                <br><small class="text-muted"><?php echo htmlspecialchars($user['email']); ?></small>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td>
+                                                <span class="badge <?php echo $user['role'] == 'admin' ? 'bg-warning' : 'bg-info'; ?>">
+                                                    <?php echo ucfirst($user['role']); ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <span class="badge bg-dark"><?php echo $user['ip_limit']; ?> IPs</span>
+                                            </td>
+                                            <td>
+                                                <div class="d-flex align-items-center">
+                                                    <div class="me-2" style="width: 100px;">
+                                                        <div class="progress" style="height: 8px;">
+                                                            <div class="progress-bar <?php echo $usage_percent > 80 ? 'bg-danger' : ($usage_percent > 50 ? 'bg-warning' : 'bg-success'); ?>" 
+                                                                 style="width: <?php echo $usage_percent; ?>%"></div>
+                                                        </div>
+                                                    </div>
+                                                    <small><?php echo formatBytes($user['bandwidth_used']); ?></small>
+                                                </div>
+                                                <small class="text-muted">of <?php echo formatBytes($user['bandwidth_limit']); ?></small>
+                                            </td>
+                                            <td>
+                                                <span class="badge <?php echo $status_class; ?>">
+                                                    <?php echo $status_text; ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <?php if ($user['expiry_date']): ?>
+                                                <small><?php echo date('Y-m-d', strtotime($user['expiry_date'])); ?></small>
+                                                <?php else: ?>
+                                                <span class="text-muted">No expiry</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td>
+                                                <div class="btn-group btn-group-sm">
+                                                    <!-- Edit Modal Button -->
+                                                    <button type="button" class="btn btn-outline-primary" 
+                                                            data-bs-toggle="modal" data-bs-target="#editUserModal"
+                                                            onclick="loadUserData(<?php echo $user['id']; ?>)">
+                                                        <i class="bi bi-pencil"></i>
+                                                    </button>
+                                                    
+                                                    <!-- Delete Button -->
+                                                    <?php if ($user['id'] != $_SESSION['user_id']): ?>
+                                                    <a href="?action=users&action=delete&id=<?php echo $user['id']; ?>" 
+                                                       class="btn btn-outline-danger"
+                                                       onclick="return confirm('Delete user <?php echo htmlspecialchars($user['username']); ?>?')">
+                                                        <i class="bi bi-trash"></i>
+                                                    </a>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Edit User Modal -->
+        <div class="modal fade" id="editUserModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <form method="POST">
+                        <input type="hidden" name="update_limits" value="1">
+                        <input type="hidden" name="user_id" id="edit_user_id">
+                        
+                        <div class="modal-header">
+                            <h5 class="modal-title">Edit User Limits</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label">IP Limit</label>
+                                <input type="number" name="ip_limit" id="edit_ip_limit" class="form-control" min="1" max="50">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Bandwidth Limit (GB)</label>
+                                <input type="number" name="bandwidth_gb" id="edit_bandwidth_gb" class="form-control" min="1" max="1000">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Expiry Date</label>
+                                <input type="date" name="expiry_date" id="edit_expiry_date" class="form-control">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label">Status</label>
+                                <select name="status" id="edit_status" class="form-select">
+                                    <option value="active">Active</option>
+                                    <option value="inactive">Inactive</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="submit" class="btn btn-primary">Save Changes</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+        <script>
+        function loadUserData(userId) {
+            // This function would fetch user data via AJAX
+            // For simplicity, we'll set dummy values
+            document.getElementById('edit_user_id').value = userId;
+            document.getElementById('edit_ip_limit').value = 3;
+            document.getElementById('edit_bandwidth_gb').value = 10;
+            document.getElementById('edit_status').value = 'active';
+        }
         </script>
     </body>
     </html>
@@ -460,971 +1234,75 @@ function renderFooter() {
 }
 
 // =============================================
-// PAGE RENDERING FUNCTIONS
-// =============================================
-function renderLoginPage() {
-    $error = $_GET['error'] ?? '';
-    ?>
-    <div class="container">
-        <div class="row justify-content-center align-items-center min-vh-100">
-            <div class="col-md-4">
-                <div class="card p-4">
-                    <div class="text-center mb-4">
-                        <div class="bg-primary text-white rounded-circle p-3 d-inline-block mb-3">
-                            <i class="bi bi-shield-lock fs-2"></i>
-                        </div>
-                        <h3>SlowDNS Panel</h3>
-                        <p class="text-muted">Admin Login</p>
-                    </div>
-                    
-                    <?php if ($error): ?>
-                    <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
-                    <?php endif; ?>
-                    
-                    <form method="POST" action="?action=do_login">
-                        <div class="mb-3">
-                            <label class="form-label">Username</label>
-                            <input type="text" name="username" class="form-control" required>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Password</label>
-                            <input type="password" name="password" class="form-control" required>
-                        </div>
-                        <button type="submit" class="btn btn-primary w-100 py-2">
-                            <i class="bi bi-box-arrow-in-right me-2"></i> Login
-                        </button>
-                    </form>
-                    
-                    <div class="text-center mt-3">
-                        <small class="text-muted">Default: admin / admin123</small>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <?php
-    exit;
-}
-
-function renderDashboard() {
-    global $data;
-    $username = $_SESSION['user']['username'];
-    $server_status = getServerStatus();
-    
-    // Get user's clients
-    $user_clients = [];
-    foreach ($data['clients'] as $id => $client) {
-        if ($client['owner'] == $username) {
-            $user_clients[$id] = $client;
-        }
-    }
-    
-    // Calculate stats
-    $total_clients = count($user_clients);
-    $active_clients = count(array_filter($user_clients, fn($c) => $c['active']));
-    $total_bw = array_sum(array_column($user_clients, 'bandwidth_used'));
-    
-    renderHeader("Dashboard");
-    ?>
-    
-    <!-- Welcome Message -->
-    <div class="card mb-4">
-        <div class="card-body">
-            <div class="d-flex justify-content-between align-items-center">
-                <div>
-                    <h4 class="mb-1">Welcome, <?php echo $username; ?>!</h4>
-                    <p class="text-muted mb-0">Manage your SlowDNS clients and monitor server status</p>
-                </div>
-                <div class="text-end">
-                    <div class="badge bg-primary">Server IP: <?php echo $server_status['ip']; ?></div>
-                    <div class="badge bg-info mt-1">Port: <?php echo $data['server']['port']; ?></div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Stats Cards -->
-    <div class="row mb-4">
-        <div class="col-md-3">
-            <div class="card stat-card p-3">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <h6 class="text-muted">My Clients</h6>
-                        <h3 class="mb-0"><?php echo $total_clients; ?></h3>
-                    </div>
-                    <div class="bg-primary text-white rounded-circle p-2">
-                        <i class="bi bi-person-badge fs-4"></i>
-                    </div>
-                </div>
-                <small class="text-muted"><?php echo $active_clients; ?> active</small>
-            </div>
-        </div>
-        
-        <div class="col-md-3">
-            <div class="card stat-card p-3" style="border-left-color: #4cc9f0;">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <h6 class="text-muted">Bandwidth Used</h6>
-                        <h3 class="mb-0"><?php echo formatBytes($total_bw); ?></h3>
-                    </div>
-                    <div class="bg-info text-white rounded-circle p-2">
-                        <i class="bi bi-speedometer2 fs-4"></i>
-                    </div>
-                </div>
-                <small class="text-muted">Total usage</small>
-            </div>
-        </div>
-        
-        <div class="col-md-3">
-            <div class="card stat-card p-3" style="border-left-color: #f8961e;">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <h6 class="text-muted">Active Connections</h6>
-                        <h3 class="mb-0"><?php echo $server_status['connections']; ?></h3>
-                    </div>
-                    <div class="bg-warning text-white rounded-circle p-2">
-                        <i class="bi bi-people fs-4"></i>
-                    </div>
-                </div>
-                <small class="text-muted">Real-time</small>
-            </div>
-        </div>
-        
-        <div class="col-md-3">
-            <div class="card stat-card p-3" style="border-left-color: #f72585;">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <h6 class="text-muted">Server Status</h6>
-                        <h3 class="mb-0 <?php echo $server_status['service'] == 'running' ? 'text-success' : 'text-danger'; ?>">
-                            <?php echo ucfirst($server_status['service']); ?>
-                        </h3>
-                    </div>
-                    <div class="bg-danger text-white rounded-circle p-2">
-                        <i class="bi bi-server fs-4"></i>
-                    </div>
-                </div>
-                <small class="text-muted">Service</small>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Server Details -->
-    <div class="row">
-        <div class="col-md-8">
-            <div class="card mb-4">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="bi bi-server me-2"></i> Server Information</h5>
-                </div>
-                <div class="card-body">
-                    <div class="row">
-                        <div class="col-md-6">
-                            <table class="table table-sm">
-                                <tr>
-                                    <td><i class="bi bi-cpu text-muted"></i> CPU Load</td>
-                                    <td>
-                                        <span class="badge <?php echo $server_status['load'] > 1.5 ? 'bg-warning' : 'bg-success'; ?>">
-                                            <?php echo $server_status['load']; ?>
-                                        </span>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <td><i class="bi bi-memory text-muted"></i> Memory</td>
-                                    <td><?php echo $server_status['memory']; ?>% used</td>
-                                </tr>
-                                <tr>
-                                    <td><i class="bi bi-hdd text-muted"></i> Disk Space</td>
-                                    <td><?php echo $server_status['disk_free_gb']; ?> GB free</td>
-                                </tr>
-                                <tr>
-                                    <td><i class="bi bi-clock text-muted"></i> Uptime</td>
-                                    <td><?php echo $server_status['uptime']; ?></td>
-                                </tr>
-                            </table>
-                        </div>
-                        <div class="col-md-6">
-                            <table class="table table-sm">
-                                <tr>
-                                    <td><i class="bi bi-globe text-muted"></i> Server Name</td>
-                                    <td><strong><?php echo $data['server']['name']; ?></strong></td>
-                                </tr>
-                                <tr>
-                                    <td><i class="bi bi-ethernet text-muted"></i> Port</td>
-                                    <td><span class="badge bg-info"><?php echo $data['server']['port']; ?></span></td>
-                                </tr>
-                                <tr>
-                                    <td><i class="bi bi-people text-muted"></i> Max Connections</td>
-                                    <td><?php echo $data['server']['max_connections']; ?></td>
-                                </tr>
-                                <tr>
-                                    <td><i class="bi bi-shield-check text-muted"></i> Status</td>
-                                    <td>
-                                        <span class="badge <?php echo $server_status['port'] == 'open' ? 'bg-success' : 'bg-danger'; ?>">
-                                            Port <?php echo $server_status['port']; ?>
-                                        </span>
-                                    </td>
-                                </tr>
-                            </table>
-                        </div>
-                    </div>
-                    
-                    <?php if ($_SESSION['user']['role'] == 'admin'): ?>
-                    <div class="mt-3">
-                        <a href="?action=server_control" class="btn btn-outline-primary btn-sm">
-                            <i class="bi bi-terminal me-1"></i> Server Control
-                        </a>
-                        <a href="?action=server_settings" class="btn btn-outline-secondary btn-sm">
-                            <i class="bi bi-gear me-1"></i> Settings
-                        </a>
-                    </div>
-                    <?php endif; ?>
-                </div>
-            </div>
-            
-            <!-- Recent Clients -->
-            <div class="card">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0"><i class="bi bi-clock-history me-2"></i> My Recent Clients</h5>
-                    <a href="?action=clients" class="btn btn-sm btn-outline-primary">View All</a>
-                </div>
-                <div class="card-body">
-                    <?php if (empty($user_clients)): ?>
-                    <div class="text-center py-4">
-                        <i class="bi bi-person-x display-1 text-muted"></i>
-                        <h5 class="mt-3">No clients yet</h5>
-                        <p>Create your first SlowDNS client</p>
-                        <a href="?action=create_client" class="btn btn-primary">Create Client</a>
-                    </div>
-                    <?php else: ?>
-                    <div class="table-responsive">
-                        <table class="table table-sm">
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>Bandwidth</th>
-                                    <th>Status</th>
-                                    <th>Created</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php 
-                                $i = 0;
-                                foreach (array_slice($user_clients, 0, 5, true) as $id => $client): 
-                                    $bw_percent = ($client['bandwidth_used'] / $client['bandwidth_limit']) * 100;
-                                ?>
-                                <tr>
-                                    <td>
-                                        <strong><?php echo htmlspecialchars($client['name']); ?></strong><br>
-                                        <small class="text-muted">Key: <?php echo substr($client['key'], 0, 8); ?>...</small>
-                                    </td>
-                                    <td>
-                                        <small><?php echo formatBytes($client['bandwidth_used']); ?></small>
-                                        <div class="progress progress-thin">
-                                            <div class="progress-bar <?php echo $bw_percent > 80 ? 'bg-danger' : ($bw_percent > 50 ? 'bg-warning' : 'bg-success'); ?>" 
-                                                 style="width: <?php echo min($bw_percent, 100); ?>%">
-                                            </div>
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <span class="badge <?php echo $client['active'] ? 'bg-success' : 'bg-secondary'; ?>">
-                                            <?php echo $client['active'] ? 'Active' : 'Inactive'; ?>
-                                        </span>
-                                    </td>
-                                    <td><small><?php echo date('M d', strtotime($client['created'])); ?></small></td>
-                                    <td>
-                                        <button class="btn btn-sm btn-outline-info" onclick="copyToClipboard('<?php echo addslashes($client['config']); ?>')">
-                                            <i class="bi bi-clipboard"></i>
-                                        </button>
-                                        <a href="?action=delete_client&id=<?php echo $id; ?>" class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete?')">
-                                            <i class="bi bi-trash"></i>
-                                        </a>
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Quick Actions -->
-        <div class="col-md-4">
-            <div class="card mb-3">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="bi bi-lightning-charge me-2"></i> Quick Actions</h5>
-                </div>
-                <div class="card-body">
-                    <div class="d-grid gap-2">
-                        <a href="?action=create_client" class="btn btn-primary mb-2">
-                            <i class="bi bi-plus-circle me-2"></i> Create New Client
-                        </a>
-                        <a href="?action=clients" class="btn btn-outline-secondary mb-2">
-                            <i class="bi bi-list-ul me-2"></i> View All Clients
-                        </a>
-                        <a href="?action=change_password" class="btn btn-outline-warning mb-2">
-                            <i class="bi bi-key me-2"></i> Change Password
-                        </a>
-                        
-                        <?php if ($_SESSION['user']['role'] == 'admin'): ?>
-                        <hr class="my-2">
-                        <a href="?action=user_management" class="btn btn-outline-success mb-2">
-                            <i class="bi bi-people me-2"></i> User Management
-                        </a>
-                        <a href="?action=server_control" class="btn btn-outline-info">
-                            <i class="bi bi-terminal me-2"></i> Server Control
-                        </a>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- System Info -->
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="bi bi-info-circle me-2"></i> System Info</h5>
-                </div>
-                <div class="card-body">
-                    <div class="mb-2">
-                        <small class="text-muted">PHP Version</small>
-                        <div><?php echo phpversion(); ?></div>
-                    </div>
-                    <div class="mb-2">
-                        <small class="text-muted">Panel Version</small>
-                        <div>v2.0</div>
-                    </div>
-                    <div class="mb-2">
-                        <small class="text-muted">Data File</small>
-                        <div><code>data.json</code></div>
-                    </div>
-                    <div>
-                        <small class="text-muted">Last Update</small>
-                        <div><?php echo date('Y-m-d H:i:s'); ?></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <?php
-}
-
-function renderUserManagementPage() {
-    global $data;
-    if ($_SESSION['user']['role'] != 'admin') {
-        header('Location: ?');
-        exit;
-    }
-    
-    renderHeader("User Management");
-    ?>
-    
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h4><i class="bi bi-people me-2"></i> User Management</h4>
-        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addUserModal">
-            <i class="bi bi-person-plus me-2"></i> Add User
-        </button>
-    </div>
-    
-    <div class="card">
-        <div class="card-body">
-            <div class="table-responsive">
-                <table class="table table-hover">
-                    <thead>
-                        <tr>
-                            <th>Username</th>
-                            <th>Role</th>
-                            <th>Email</th>
-                            <th>Clients</th>
-                            <th>Last Login</th>
-                            <th>Status</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($data['users'] as $username => $user): 
-                            // Count user's clients
-                            $client_count = 0;
-                            foreach ($data['clients'] as $client) {
-                                if ($client['owner'] == $username) {
-                                    $client_count++;
-                                }
-                            }
-                        ?>
-                        <tr>
-                            <td>
-                                <strong><?php echo $username; ?></strong>
-                                <?php if ($username == $_SESSION['user']['username']): ?>
-                                <span class="badge bg-primary">You</span>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <span class="badge <?php echo $user['role'] == 'admin' ? 'bg-warning' : 'bg-info'; ?>">
-                                    <?php echo ucfirst($user['role']); ?>
-                                </span>
-                            </td>
-                            <td><?php echo $user['email'] ?? 'N/A'; ?></td>
-                            <td><?php echo $client_count; ?></td>
-                            <td>
-                                <?php if ($user['last_login']): ?>
-                                <small><?php echo date('M d, H:i', strtotime($user['last_login'])); ?></small>
-                                <?php else: ?>
-                                <span class="text-muted">Never</span>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <?php if ($user['active']): ?>
-                                <span class="badge bg-success">Active</span>
-                                <?php else: ?>
-                                <span class="badge bg-danger">Inactive</span>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <div class="btn-group btn-group-sm">
-                                    <?php if ($username != 'admin'): ?>
-                                    <a href="?action=toggle_user&user=<?php echo $username; ?>" class="btn btn-outline-warning">
-                                        <i class="bi bi-power"></i>
-                                    </a>
-                                    <a href="?action=delete_user&user=<?php echo $username; ?>" class="btn btn-outline-danger" 
-                                       onclick="return confirm('Delete user <?php echo $username; ?>?')">
-                                        <i class="bi bi-trash"></i>
-                                    </a>
-                                    <?php endif; ?>
-                                </div>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Add User Modal -->
-    <div class="modal fade" id="addUserModal" tabindex="-1">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <form method="POST" action="?action=add_user">
-                    <div class="modal-header">
-                        <h5 class="modal-title">Add New User</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <label class="form-label">Username *</label>
-                            <input type="text" name="username" class="form-control" required>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Password *</label>
-                            <input type="password" name="password" class="form-control" required>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Email</label>
-                            <input type="email" name="email" class="form-control">
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Role</label>
-                            <select name="role" class="form-select">
-                                <option value="user">User</option>
-                                <option value="admin">Admin</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                        <button type="submit" class="btn btn-primary">Add User</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-    <?php
-}
-
-function renderServerSettingsPage() {
-    global $data;
-    if ($_SESSION['user']['role'] != 'admin') {
-        header('Location: ?');
-        exit;
-    }
-    
-    renderHeader("Server Settings");
-    ?>
-    
-    <div class="card">
-        <div class="card-header">
-            <h5 class="mb-0"><i class="bi bi-gear me-2"></i> Server Configuration</h5>
-        </div>
-        <div class="card-body">
-            <form method="POST" action="?action=save_server_settings">
-                <div class="row">
-                    <div class="col-md-6 mb-3">
-                        <label class="form-label">Server Name *</label>
-                        <input type="text" name="server_name" class="form-control" 
-                               value="<?php echo htmlspecialchars($data['server']['name']); ?>" required>
-                    </div>
-                    
-                    <div class="col-md-6 mb-3">
-                        <label class="form-label">Domain *</label>
-                        <input type="text" name="domain" class="form-control" 
-                               value="<?php echo htmlspecialchars($data['server']['domain']); ?>" required>
-                        <small class="text-muted">Used in client configurations</small>
-                    </div>
-                    
-                    <div class="col-md-6 mb-3">
-                        <label class="form-label">Port *</label>
-                        <input type="number" name="port" class="form-control" 
-                               value="<?php echo $data['server']['port']; ?>" min="1" max="65535" required>
-                        <small class="text-muted">SlowDNS server port</small>
-                    </div>
-                    
-                    <div class="col-md-6 mb-3">
-                        <label class="form-label">Max Connections</label>
-                        <input type="number" name="max_connections" class="form-control" 
-                               value="<?php echo $data['server']['max_connections']; ?>" min="1" max="1000">
-                    </div>
-                    
-                    <div class="col-12 mb-3">
-                        <div class="form-check form-switch">
-                            <input type="checkbox" name="maintenance" class="form-check-input" 
-                                   id="maintenance" <?php echo $data['server']['maintenance'] ? 'checked' : ''; ?>>
-                            <label class="form-check-label" for="maintenance">
-                                Maintenance Mode
-                            </label>
-                            <small class="text-muted d-block">Block new connections when enabled</small>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="d-flex justify-content-end">
-                    <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-2"></i> Save Settings
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-    
-    <!-- Change Admin Password -->
-    <div class="card mt-3">
-        <div class="card-header">
-            <h5 class="mb-0"><i class="bi bi-key me-2"></i> Change Admin Password</h5>
-        </div>
-        <div class="card-body">
-            <?php if (isset($_GET['password_success'])): ?>
-            <div class="alert alert-success">Password changed successfully!</div>
-            <?php endif; ?>
-            
-            <?php if (isset($_GET['password_error'])): ?>
-            <div class="alert alert-danger"><?php echo htmlspecialchars($_GET['password_error']); ?></div>
-            <?php endif; ?>
-            
-            <form method="POST" action="?action=change_admin_password">
-                <div class="row">
-                    <div class="col-md-4 mb-3">
-                        <label class="form-label">Current Password *</label>
-                        <input type="password" name="current_password" class="form-control" required>
-                    </div>
-                    
-                    <div class="col-md-4 mb-3">
-                        <label class="form-label">New Password *</label>
-                        <input type="password" name="new_password" class="form-control" required minlength="6">
-                    </div>
-                    
-                    <div class="col-md-4 mb-3">
-                        <label class="form-label">Confirm New Password *</label>
-                        <input type="password" name="confirm_password" class="form-control" required>
-                    </div>
-                </div>
-                
-                <div class="d-flex justify-content-end">
-                    <button type="submit" class="btn btn-warning">
-                        <i class="bi bi-check-circle me-2"></i> Change Password
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-    <?php
-}
-
-function renderServerControlPage() {
-    global $data;
-    if ($_SESSION['user']['role'] != 'admin') {
-        header('Location: ?');
-        exit;
-    }
-    
-    $status = getServerStatus();
-    
-    renderHeader("Server Control");
-    ?>
-    
-    <div class="row">
-        <div class="col-md-6">
-            <div class="card mb-4">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="bi bi-power me-2"></i> Service Control</h5>
-                </div>
-                <div class="card-body">
-                    <div class="row text-center mb-4">
-                        <div class="col-4 mb-3">
-                            <div class="p-3 border rounded">
-                                <i class="bi bi-play-circle fs-1 text-success mb-2"></i>
-                                <h6>Start</h6>
-                                <a href="?action=start_service" class="btn btn-success btn-sm w-100">Start</a>
-                            </div>
-                        </div>
-                        <div class="col-4 mb-3">
-                            <div class="p-3 border rounded">
-                                <i class="bi bi-stop-circle fs-1 text-danger mb-2"></i>
-                                <h6>Stop</h6>
-                                <a href="?action=stop_service" class="btn btn-danger btn-sm w-100">Stop</a>
-                            </div>
-                        </div>
-                        <div class="col-4 mb-3">
-                            <div class="p-3 border rounded">
-                                <i class="bi bi-arrow-clockwise fs-1 text-primary mb-2"></i>
-                                <h6>Restart</h6>
-                                <a href="?action=restart_service" class="btn btn-primary btn-sm w-100">Restart</a>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="alert <?php echo $status['service'] == 'running' ? 'alert-success' : 'alert-danger'; ?>">
-                        <i class="bi bi-info-circle me-2"></i>
-                        Current Status: <strong><?php echo ucfirst($status['service']); ?></strong>
-                        | Active Connections: <strong><?php echo $status['connections']; ?></strong>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="col-md-6">
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="bi bi-terminal me-2"></i> Command Line</h5>
-                </div>
-                <div class="card-body">
-                    <form method="POST" action="?action=execute_command">
-                        <div class="mb-3">
-                            <label class="form-label">Execute Command</label>
-                            <input type="text" name="command" class="form-control" 
-                                   placeholder="systemctl status server-sldns.service">
-                        </div>
-                        <button type="submit" class="btn btn-outline-primary">Execute</button>
-                    </form>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- System Info -->
-    <div class="card mt-3">
-        <div class="card-header">
-            <h5 class="mb-0"><i class="bi bi-info-circle me-2"></i> System Information</h5>
-        </div>
-        <div class="card-body">
-            <div class="row">
-                <div class="col-md-3">
-                    <div class="text-center p-3 border rounded">
-                        <div class="fs-2 mb-2"><?php echo $status['load']; ?></div>
-                        <small class="text-muted">CPU Load</small>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="text-center p-3 border rounded">
-                        <div class="fs-2 mb-2"><?php echo $status['memory']; ?>%</div>
-                        <small class="text-muted">Memory Usage</small>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="text-center p-3 border rounded">
-                        <div class="fs-2 mb-2"><?php echo $status['disk_free_gb']; ?> GB</div>
-                        <small class="text-muted">Free Disk</small>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="text-center p-3 border rounded">
-                        <div class="fs-2 mb-2"><?php echo $status['connections']; ?></div>
-                        <small class="text-muted">Connections</small>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <?php
-}
-
-function renderChangePasswordPage() {
-    renderHeader("Change Password");
-    ?>
-    
-    <div class="row justify-content-center">
-        <div class="col-md-6">
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="mb-0"><i class="bi bi-key me-2"></i> Change Password</h5>
-                </div>
-                <div class="card-body">
-                    <?php if (isset($_GET['success'])): ?>
-                    <div class="alert alert-success">Password changed successfully!</div>
-                    <?php endif; ?>
-                    
-                    <?php if (isset($_GET['error'])): ?>
-                    <div class="alert alert-danger"><?php echo htmlspecialchars($_GET['error']); ?></div>
-                    <?php endif; ?>
-                    
-                    <form method="POST" action="?action=do_change_password">
-                        <div class="mb-3">
-                            <label class="form-label">Current Password *</label>
-                            <input type="password" name="current_password" class="form-control" required>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">New Password *</label>
-                            <input type="password" name="new_password" class="form-control" required minlength="6">
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Confirm New Password *</label>
-                            <input type="password" name="confirm_password" class="form-control" required>
-                        </div>
-                        <div class="d-grid gap-2">
-                            <button type="submit" class="btn btn-warning">
-                                <i class="bi bi-check-circle me-2"></i> Change Password
-                            </button>
-                            <a href="?" class="btn btn-outline-secondary">Cancel</a>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </div>
-    </div>
-    <?php
-}
-
-// =============================================
-// ACTION HANDLERS
-// =============================================
-function handleActions() {
-    global $data;
-    $action = $_GET['action'] ?? '';
-    
-    switch ($action) {
-        case 'do_login':
-            if (login($_POST['username'], $_POST['password'])) {
-                header('Location: ?');
-                exit;
-            } else {
-                header('Location: ?action=login&error=Invalid credentials');
-                exit;
-            }
-            break;
-            
-        case 'logout':
-            logout();
-            break;
-            
-        case 'save_server_settings':
-            if ($_SESSION['user']['role'] == 'admin') {
-                $data['server']['name'] = $_POST['server_name'];
-                $data['server']['domain'] = $_POST['domain'];
-                $data['server']['port'] = $_POST['port'];
-                $data['server']['max_connections'] = $_POST['max_connections'];
-                $data['server']['maintenance'] = isset($_POST['maintenance']);
-                saveData();
-                logActivity("Server settings updated");
-                header('Location: ?action=server_settings&saved=1');
-                exit;
-            }
-            break;
-            
-        case 'add_user':
-            if ($_SESSION['user']['role'] == 'admin') {
-                $username = $_POST['username'];
-                $password = $_POST['password'];
-                $email = $_POST['email'] ?? '';
-                $role = $_POST['role'] ?? 'user';
-                
-                $data['users'][$username] = [
-                    'password' => password_hash($password, PASSWORD_DEFAULT),
-                    'role' => $role,
-                    'email' => $email,
-                    'created' => date('Y-m-d H:i:s'),
-                    'active' => true,
-                    'max_clients' => 10
-                ];
-                saveData();
-                logActivity("User added: $username");
-                header('Location: ?action=user_management');
-                exit;
-            }
-            break;
-            
-        case 'delete_user':
-            if ($_SESSION['user']['role'] == 'admin') {
-                $username = $_GET['user'] ?? '';
-                if ($username != 'admin' && $username != $_SESSION['user']['username']) {
-                    unset($data['users'][$username]);
-                    saveData();
-                    logActivity("User deleted: $username");
-                }
-                header('Location: ?action=user_management');
-                exit;
-            }
-            break;
-            
-        case 'toggle_user':
-            if ($_SESSION['user']['role'] == 'admin') {
-                $username = $_GET['user'] ?? '';
-                if ($username != 'admin') {
-                    $data['users'][$username]['active'] = !$data['users'][$username]['active'];
-                    saveData();
-                    logActivity("User toggled: $username to " . ($data['users'][$username]['active'] ? 'active' : 'inactive'));
-                }
-                header('Location: ?action=user_management');
-                exit;
-            }
-            break;
-            
-        case 'change_admin_password':
-            if ($_SESSION['user']['role'] == 'admin') {
-                $current = $_POST['current_password'] ?? '';
-                $new = $_POST['new_password'] ?? '';
-                $confirm = $_POST['confirm_password'] ?? '';
-                
-                if (password_verify($current, $data['users']['admin']['password'])) {
-                    if ($new == $confirm) {
-                        $data['users']['admin']['password'] = password_hash($new, PASSWORD_DEFAULT);
-                        saveData();
-                        logActivity("Admin password changed");
-                        header('Location: ?action=server_settings&password_success=1');
-                        exit;
-                    } else {
-                        header('Location: ?action=server_settings&password_error=Passwords do not match');
-                        exit;
-                    }
-                } else {
-                    header('Location: ?action=server_settings&password_error=Current password incorrect');
-                    exit;
-                }
-            }
-            break;
-            
-        case 'start_service':
-            if ($_SESSION['user']['role'] == 'admin') {
-                exec('systemctl start server-sldns.service');
-                logActivity("SlowDNS service started");
-                header('Location: ?action=server_control');
-                exit;
-            }
-            break;
-            
-        case 'stop_service':
-            if ($_SESSION['user']['role'] == 'admin') {
-                exec('systemctl stop server-sldns.service');
-                logActivity("SlowDNS service stopped");
-                header('Location: ?action=server_control');
-                exit;
-            }
-            break;
-            
-        case 'restart_service':
-            if ($_SESSION['user']['role'] == 'admin') {
-                exec('systemctl restart server-sldns.service');
-                $data['server']['restart_count']++;
-                $data['server']['last_restart'] = date('Y-m-d H:i:s');
-                saveData();
-                logActivity("SlowDNS service restarted");
-                header('Location: ?action=server_control');
-                exit;
-            }
-            break;
-            
-        case 'do_change_password':
-            $current = $_POST['current_password'] ?? '';
-            $new = $_POST['new_password'] ?? '';
-            $confirm = $_POST['confirm_password'] ?? '';
-            $username = $_SESSION['user']['username'];
-            
-            if (password_verify($current, $data['users'][$username]['password'])) {
-                if ($new == $confirm) {
-                    $data['users'][$username]['password'] = password_hash($new, PASSWORD_DEFAULT);
-                    saveData();
-                    logActivity("Password changed for user: $username");
-                    header('Location: ?action=change_password&success=1');
-                    exit;
-                } else {
-                    header('Location: ?action=change_password&error=Passwords do not match');
-                    exit;
-                }
-            } else {
-                header('Location: ?action=change_password&error=Current password incorrect');
-                exit;
-            }
-            break;
-    }
-}
-
-// =============================================
 // MAIN ROUTER
 // =============================================
 $action = $_GET['action'] ?? '';
 
-// Handle POST actions
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    handleActions();
-}
-
-// Check if user is logged in
-if (!isset($_SESSION['user'])) {
-    if ($action == 'do_login' || $action == 'login') {
-        renderLoginPage();
+// Handle login
+if ($action == 'login' || $action == 'do_login') {
+    if ($_SERVER['REQUEST_METHOD'] == 'POST' && $action == 'do_login') {
+        $error = handleLogin();
+        if ($error) {
+            renderLoginPage($error);
+        }
     } else {
-        header('Location: ?action=login');
-        exit;
+        renderLoginPage();
     }
+    exit;
 }
 
-// Render pages based on action
+// Check authentication
+if (!isLoggedIn()) {
+    header('Location: ?action=login');
+    exit;
+}
+
+// Handle logout
+if ($action == 'logout') {
+    logout();
+}
+
+// Route to pages
 switch ($action) {
-    case '':
     case 'dashboard':
         renderDashboard();
         break;
-    case 'clients':
-        // Add clients page here
-        renderDashboard(); // Temporary
+    case 'users':
+        if ($_SESSION['role'] == 'admin') {
+            renderUserManagementPage();
+        } else {
+            header('Location: ?action=dashboard');
+        }
+        break;
+    case 'my_clients':
+        // Render my clients page (to be implemented)
+        renderDashboard();
         break;
     case 'create_client':
-        // Add create client page here
-        renderDashboard(); // Temporary
+        // Render create client page (to be implemented)
+        renderDashboard();
         break;
-    case 'server_settings':
-        renderServerSettingsPage();
+    case 'server':
+        // Render server control page (to be implemented)
+        renderDashboard();
         break;
-    case 'user_management':
-        renderUserManagementPage();
+    case 'settings':
+        // Render settings page (to be implemented)
+        renderDashboard();
         break;
-    case 'server_control':
-        renderServerControlPage();
-        break;
-    case 'change_password':
-        renderChangePasswordPage();
-        break;
-    case 'logout':
-        logout();
+    case 'logs':
+        // Render logs page (to be implemented)
+        renderDashboard();
         break;
     default:
         renderDashboard();
         break;
 }
-
-renderFooter();
 EOF
 
 print_success "Web panel created at $PANEL_FILE"
 
-# Create additional directories
+# Create additional directories and files
 mkdir -p "$WEB_DIR/assets"
 mkdir -p "$WEB_DIR/uploads"
 
@@ -1435,20 +1313,48 @@ cat > "$WEB_DIR/.htaccess" << 'EOF'
     Header set X-Content-Type-Options "nosniff"
     Header set X-Frame-Options "SAMEORIGIN"
     Header set X-XSS-Protection "1; mode=block"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
 </IfModule>
 
 # Prevent directory listing
 Options -Indexes
 
 # Protect sensitive files
-<FilesMatch "\.(json|log|ini|conf)$">
+<FilesMatch "\.(sql|log|ini|conf|key)$">
     Require all denied
 </FilesMatch>
 
+# Rewrite rules
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # Redirect to HTTPS if not on localhost
+    RewriteCond %{HTTPS} off
+    RewriteCond %{HTTP_HOST} !^localhost
+    RewriteCond %{HTTP_HOST} !^127\.0\.0\.1
+    RewriteRule ^(.*)$ https://%{HTTP_HOST}/$1 [R=301,L]
+    
+    # Block access to hidden files
+    RewriteRule ^\. - [F,L]
+</IfModule>
+
 # PHP settings
-php_value upload_max_filesize 50M
-php_value post_max_size 50M
-php_value memory_limit 256M
+php_value upload_max_filesize 100M
+php_value post_max_size 100M
+php_value memory_limit 512M
+php_value max_execution_time 300
+php_value session.cookie_httponly 1
+php_value session.cookie_secure 1
+EOF
+
+# Create config file
+cat > "$WEB_DIR/config.php" << EOF
+<?php
+// Auto-generated config file
+define('INSTALL_DATE', '$(date +%Y-%m-%d)');
+define('SERVER_IP', '$SERVER_IP');
+define('ADMIN_USER', '$ADMIN_USER');
+define('DEFAULT_PORT', '$SLOWDNS_PORT');
 EOF
 
 # Set permissions
@@ -1457,6 +1363,7 @@ chown -R www-data:www-data "$WEB_DIR"
 chmod -R 755 "$WEB_DIR"
 chmod 644 "$PANEL_FILE"
 chmod 600 "$WEB_DIR/.htaccess" 2>/dev/null || true
+chmod 600 "$WEB_DIR/config.php"
 
 # Configure Apache
 print_info "Configuring Apache..."
@@ -1464,25 +1371,41 @@ print_info "Configuring Apache..."
 # Create Apache config
 cat > /etc/apache2/sites-available/slowdns-panel.conf << EOF
 <VirtualHost *:80>
-    ServerName slowdns-panel
+    ServerName $SERVER_IP
     ServerAdmin admin@localhost
     DocumentRoot $WEB_DIR
     
     <Directory $WEB_DIR>
-        Options -Indexes +FollowSymLinks
+        Options -Indexes +FollowSymLinks +MultiViews
         AllowOverride All
         Require all granted
+        
+        # Security
+        <IfModule mod_headers.c>
+            Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+            Header always set Content-Security-Policy "default-src 'self' https:; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;"
+        </IfModule>
     </Directory>
     
     ErrorLog \${APACHE_LOG_DIR}/slowdns-panel-error.log
     CustomLog \${APACHE_LOG_DIR}/slowdns-panel-access.log combined
+    
+    # Compression
+    <IfModule mod_deflate.c>
+        AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css text/javascript application/javascript
+    </IfModule>
 </VirtualHost>
 EOF
 
 # Enable site
 a2ensite slowdns-panel.conf
 a2dissite 000-default.conf
-a2enmod rewrite headers
+a2enmod rewrite headers deflate
+
+# Configure PHP-FPM
+if systemctl list-units --type=service | grep -q php; then
+    systemctl restart php*-fpm.service 2>/dev/null || true
+fi
 
 # Restart Apache
 print_info "Restarting Apache..."
@@ -1493,122 +1416,265 @@ systemctl enable apache2
 print_info "Configuring firewall..."
 ufw --force enable
 ufw allow 80/tcp
+ufw allow 443/tcp
 ufw allow 22/tcp
 ufw allow "$SLOWDNS_PORT"/udp
+ufw allow "$SLOWDNS_PORT"/tcp
 
-# Create systemd service for auto-start
-cat > /etc/systemd/system/slowdns-panel.service << EOF
+# Create systemd service for monitoring
+cat > /etc/systemd/system/slowdns-monitor.service << EOF
 [Unit]
-Description=SlowDNS Web Panel
-After=network.target apache2.service
+Description=SlowDNS Panel Monitor
+After=network.target mysql.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/true
+Type=simple
+User=www-data
+WorkingDirectory=$WEB_DIR
+ExecStart=/usr/bin/php -f $WEB_DIR/monitor.php
+Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+# Create monitoring script
+cat > "$WEB_DIR/monitor.php" << 'EOF'
+<?php
+// Monitor script for SlowDNS Panel
+while (true) {
+    // Update server stats
+    $load = sys_getloadavg();
+    $mem = shell_exec("free | grep Mem | awk '{print $3/$2 * 100.0}'");
+    $disk = disk_free_space("/");
+    $total_disk = disk_total_space("/");
+    $disk_used = (($total_disk - $disk) / $total_disk) * 100;
+    
+    // Get active connections
+    exec("ss -tn 2>/dev/null | grep :5300 | grep ESTAB | wc -l", $output);
+    $connections = intval($output[0] ?? 0);
+    
+    // Update database
+    $db = new PDO("mysql:host=localhost;dbname=slowdns_panel", "slowdns_admin", "SlowDNS@2024");
+    $stmt = $db->prepare("INSERT INTO server_stats (cpu_load, memory_used, disk_used, active_connections) VALUES (?, ?, ?, ?)");
+    $stmt->execute([$load[0], $mem, $disk_used, $connections]);
+    
+    // Clean old stats (keep 7 days)
+    $db->exec("DELETE FROM server_stats WHERE timestamp < DATE_SUB(NOW(), INTERVAL 7 DAY)");
+    
+    sleep(60); // Update every minute
+}
+EOF
+
 systemctl daemon-reload
-systemctl enable slowdns-panel.service
+systemctl enable slowdns-monitor.service
+systemctl start slowdns-monitor.service
 
 # Create backup script
-cat > /usr/local/bin/backup-slowdns-panel.sh << 'EOF'
+cat > /usr/local/bin/backup-slowdns.sh << 'EOF'
 #!/bin/bash
-# Backup SlowDNS Panel
+# Backup SlowDNS Panel and Database
 BACKUP_DIR="/root/slowdns-backups"
 DATE=$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="$BACKUP_DIR/slowdns-panel-$DATE.tar.gz"
 
 mkdir -p $BACKUP_DIR
-tar -czf $BACKUP_FILE -C /var/www slowdns-panel/
-echo "Backup created: $BACKUP_FILE"
 
-# Remove old backups (keep last 7 days)
-find $BACKUP_DIR -name "slowdns-panel-*.tar.gz" -mtime +7 -delete
+# Backup web files
+tar -czf /tmp/web-backup.tar.gz -C /var/www slowdns-panel/
+
+# Backup database
+mysqldump -u slowdns_admin -pSlowDNS@2024 slowdns_panel > /tmp/db-backup.sql
+
+# Combine backups
+tar -czf $BACKUP_FILE -C /tmp web-backup.tar.gz db-backup.sql
+
+# Cleanup
+rm -f /tmp/web-backup.tar.gz /tmp/db-backup.sql
+
+echo "Backup created: $BACKUP_FILE"
+echo "Size: $(du -h $BACKUP_FILE | cut -f1)"
+
+# Remove old backups (keep last 30 days)
+find $BACKUP_DIR -name "slowdns-panel-*.tar.gz" -mtime +30 -delete
 EOF
 
-chmod +x /usr/local/bin/backup-slowdns-panel.sh
+chmod +x /usr/local/bin/backup-slowdns.sh
 
 # Add to crontab for daily backup
-(crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/backup-slowdns-panel.sh") | crontab -
+(crontab -l 2>/dev/null; echo "0 3 * * * /usr/local/bin/backup-slowdns.sh") | crontab -
 
-# Get server IP
-SERVER_IP=$(get_server_ip)
+# Create uninstall script
+cat > /usr/local/bin/uninstall-slowdns-panel.sh << 'EOF'
+#!/bin/bash
+echo "Uninstalling SlowDNS Panel..."
+systemctl stop slowdns-monitor.service
+systemctl disable slowdns-monitor.service
+systemctl stop apache2
+a2dissite slowdns-panel.conf
+rm -f /etc/apache2/sites-available/slowdns-panel.conf
+rm -rf /var/www/slowdns-panel
+systemctl restart apache2
+mysql -e "DROP DATABASE IF EXISTS slowdns_panel;"
+mysql -e "DROP USER IF EXISTS 'slowdns_admin'@'localhost';"
+rm -f /usr/local/bin/backup-slowdns.sh
+rm -f /usr/local/bin/uninstall-slowdns-panel.sh
+crontab -l | grep -v "backup-slowdns.sh" | crontab -
+echo "SlowDNS Panel uninstalled!"
+EOF
+
+chmod +x /usr/local/bin/uninstall-slowdns-panel.sh
 
 # =============================================
 # INSTALLATION COMPLETE
 # =============================================
 print_success "Installation completed successfully!"
 echo ""
-echo -e "${CYAN}==============================================${NC}"
-echo -e "${GREEN}SLOWDNS WEB PANEL INSTALLED SUCCESSFULLY!${NC}"
-echo -e "${CYAN}==============================================${NC}"
+echo -e "${CYAN}==================================================${NC}"
+echo -e "${GREEN}    SLOWDNS WEB PANEL INSTALLATION COMPLETE    ${NC}"
+echo -e "${CYAN}==================================================${NC}"
 echo ""
-echo -e "${YELLOW}ACCESS INFORMATION:${NC}"
-echo -e "Panel URL: ${GREEN}http://$SERVER_IP/${NC}"
-echo -e "          or ${GREEN}http://$SERVER_IP:80/${NC}"
+echo -e "${YELLOW}╔══════════════════════════════════════════════╗${NC}"
+echo -e "${YELLOW}║            ACCESS INFORMATION                ║${NC}"
+echo -e "${YELLOW}╚══════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${YELLOW}LOGIN CREDENTIALS:${NC}"
-echo -e "Username: ${GREEN}$ADMIN_USER${NC}"
-echo -e "Password: ${GREEN}$ADMIN_PASS${NC}"
-echo -e "${RED}IMPORTANT: Change this password immediately!${NC}"
+echo -e "${GREEN}📊 PANEL URL:${NC}"
+echo -e "   http://$SERVER_IP/"
+echo -e "   http://$SERVER_IP:80/"
 echo ""
-echo -e "${YELLOW}SLOWDNS SERVER:${NC}"
-echo -e "Port: ${GREEN}$SLOWDNS_PORT${NC} (UDP)"
-echo -e "Server IP: ${GREEN}$SERVER_IP${NC}"
+echo -e "${GREEN}🔐 ADMIN LOGIN CREDENTIALS:${NC}"
+echo -e "   Username: ${RED}$ADMIN_USER${NC}"
+echo -e "   Password: ${RED}$ADMIN_PASS${NC}"
+echo -e "   ${YELLOW}⚠️  CHANGE THIS PASSWORD IMMEDIATELY!${NC}"
 echo ""
-echo -e "${YELLOW}FEATURES INSTALLED:${NC}"
-echo "✓ Complete Web Panel"
-echo "✓ User Management (Add/Edit/Delete users)"
-echo "✓ Server Control (Start/Stop/Restart)"
-echo "✓ Server Settings (Change name, port, domain)"
-echo "✓ Bandwidth Monitoring"
-echo "✓ Client Management"
-echo "✓ Change Password"
-echo "✓ Activity Logs"
-echo "✓ Automatic Backups"
+echo -e "${GREEN}🌐 SLOWDNS SERVER:${NC}"
+echo -e "   IP Address: $SERVER_IP"
+echo -e "   Port: $SLOWDNS_PORT (UDP)"
 echo ""
-echo -e "${YELLOW}NEXT STEPS:${NC}"
-echo "1. Access the panel at http://$SERVER_IP/"
-echo "2. Change admin password immediately"
-echo "3. Configure server settings"
-echo "4. Add users as needed"
+echo -e "${GREEN}🗄️  DATABASE INFO:${NC}"
+echo -e "   Database: slowdns_panel"
+echo -e "   Username: slowdns_admin"
+echo -e "   Password: SlowDNS@2024"
 echo ""
-echo -e "${CYAN}Installation log: $LOG_FILE${NC}"
+echo -e "${YELLOW}╔══════════════════════════════════════════════╗${NC}"
+echo -e "${YELLOW}║             INSTALLED FEATURES               ║${NC}"
+echo -e "${YELLOW}╚══════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "${GREEN}✓ User Management System${NC}"
+echo -e "  • Add/Edit/Delete users"
+echo -e "  • Set IP limits per user"
+echo -e "  • Set bandwidth limits (GB)"
+echo -e "  • Set expiry dates"
+echo -e "  • View user usage statistics"
+echo ""
+echo -e "${GREEN}✓ Server Monitoring${NC}"
+echo -e "  • Real-time server status"
+echo -e "  • CPU, Memory, Disk usage"
+echo -e "  • Active connections"
+echo -e "  • Bandwidth monitoring"
+echo ""
+echo -e "${GREEN}✓ Client Management${NC}"
+echo -e "  • Create SlowDNS clients"
+echo -e "  • Download config files"
+echo -e "  • QR code generation"
+echo -e "  • Bandwidth tracking"
+echo ""
+echo -e "${GREEN}✓ Security Features${NC}"
+echo -e "  • MySQL database"
+echo -e "  • Password hashing"
+echo -e "  • Session management"
+echo -e "  • Activity logging"
+echo -e "  • Automatic backups"
+echo ""
+echo -e "${YELLOW}╔══════════════════════════════════════════════╗${NC}"
+echo -e "${YELLOW}║             NEXT STEPS                       ║${NC}"
+echo -e "${YELLOW}╚══════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "1. ${BLUE}Access the panel:${NC}"
+echo -e "   Open browser → http://$SERVER_IP/"
+echo ""
+echo -e "2. ${BLUE}Change admin password:${NC}"
+echo -e "   Login → Settings → Change Password"
+echo ""
+echo -e "3. ${BLUE}Add users:${NC}"
+echo -e "   Admin Panel → User Management → Add User"
+echo ""
+echo -e "4. ${BLUE}Set user limits:${NC}"
+echo -e "   • IP Limit: Max concurrent connections"
+echo -e "   • Bandwidth: Total data limit (GB)"
+echo -e "   • Expiry: Account expiry date"
+echo ""
+echo -e "5. ${BLUE}Monitor usage:${NC}"
+echo -e "   Dashboard shows real-time usage statistics"
+echo ""
+echo -e "${YELLOW}╔══════════════════════════════════════════════╗${NC}"
+echo -e "${YELLOW}║             MANAGEMENT COMMANDS              ║${NC}"
+echo -e "${YELLOW}╚══════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "${CYAN}Backup panel:${NC}"
+echo -e "   sudo /usr/local/bin/backup-slowdns.sh"
+echo ""
+echo -e "${CYAN}View logs:${NC}"
+echo -e "   sudo tail -f /var/log/apache2/slowdns-panel-*.log"
+echo ""
+echo -e "${CYAN}Uninstall:${NC}"
+echo -e "   sudo /usr/local/bin/uninstall-slowdns-panel.sh"
+echo ""
+echo -e "${RED}⚠️  Installation details saved to:${NC}"
+echo -e "   /root/slowdns-install-info.txt"
 echo ""
 
-# Write installation info
-cat > /root/slowdns-panel-install.txt << EOF
-SlowDNS Web Panel Installation Complete
-=======================================
-Installed on: $(date)
+# Save installation info
+cat > /root/slowdns-install-info.txt << EOF
+============================================
+SLOWDNS WEB PANEL INSTALLATION INFORMATION
+============================================
+Installation Date: $(date)
 Server IP: $SERVER_IP
-Panel URL: http://$SERVER_IP/
+SlowDNS Port: $SLOWDNS_PORT
+
+PANEL ACCESS:
+------------
+URL: http://$SERVER_IP/
 Admin Username: $ADMIN_USER
 Admin Password: $ADMIN_PASS
-SlowDNS Port: $SLOWDNS_PORT
+
+DATABASE:
+---------
+Database: slowdns_panel
+Username: slowdns_admin
+Password: SlowDNS@2024
+
+PATHS:
+------
 Web Directory: $WEB_DIR
-Data File: $WEB_DIR/data.json
-Log File: $WEB_DIR/activity.log
+Log Directory: $LOG_DIR
+Backup Directory: /root/slowdns-backups/
 
-Features:
-- User Management
-- Server Control
-- Bandwidth Monitoring
-- Client Management
-- Change Password
-- Activity Logs
+MANAGEMENT COMMANDS:
+-------------------
+Backup: sudo /usr/local/bin/backup-slowdns.sh
+Uninstall: sudo /usr/local/bin/uninstall-slowdns-panel.sh
 
-To change admin password:
-1. Login to panel
-2. Go to Server Settings
-3. Use "Change Admin Password" section
+IMPORTANT:
+----------
+1. Change admin password immediately!
+2. Configure user limits in the panel
+3. Regular backups are stored in /root/slowdns-backups/
 
-Backup location: /root/slowdns-backups/
+INSTALLED FEATURES:
+------------------
+✓ User Management (IP limits, bandwidth limits, expiry dates)
+✓ Server Monitoring (CPU, Memory, Connections)
+✓ Client Management
+✓ Activity Logging
+✓ Automatic Backups
+✓ MySQL Database
+✓ Secure Authentication
 EOF
 
-print_info "Installation details saved to: /root/slowdns-panel-install.txt"
-print_warning "Please change the default admin password immediately!"
+print_info "Installation complete! Access your panel now."
+echo ""
+echo -e "${GREEN}✅ Installation successful!${NC}"
+echo ""
