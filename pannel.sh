@@ -880,16 +880,19 @@ ufw allow "$SLOWDNS_PORT"/udp > /dev/null 2>&1
 # Create systemd service for SlowDNS (example)
 cat > /etc/systemd/system/slowdns.service << EOF
 [Unit]
-Description=SlowDNS Server
-After=network.target
+Description=Server SlowDNS ALIEN
+Documentation=https://man himself
+After=network.target nss-lookup.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root
-ExecStart=/usr/local/bin/slowdns-server
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
 Restart=always
-RestartSec=10
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
