@@ -114,15 +114,109 @@ for php_ini in /etc/php/*/apache2/php.ini; do
     sed -i 's/^;date.timezone =.*/date.timezone = UTC/' $php_ini
 done
 
-# Configure MySQL
+# =============================================
+# FIXED MYSQL CONFIGURATION SECTION
+# =============================================
 print_info "Configuring MySQL database..."
-mysql -e "CREATE DATABASE IF NOT EXISTS slowdns_panel;"
-mysql -e "CREATE USER IF NOT EXISTS 'slowdns_admin'@'localhost' IDENTIFIED BY 'SlowDNS@2024';"
-mysql -e "GRANT ALL PRIVILEGES ON slowdns_panel.* TO 'slowdns_admin'@'localhost';"
-mysql -e "FLUSH PRIVILEGES;"
+
+# Check and start MySQL service
+print_info "Checking MySQL service..."
+if ! systemctl is-active --quiet mysql 2>/dev/null; then
+    print_warning "MySQL service is not running. Starting it now..."
+    
+    # Try to start MySQL
+    if systemctl start mysql 2>/dev/null; then
+        print_success "MySQL service started successfully"
+    else
+        print_warning "Could not start MySQL service, trying alternative methods..."
+        
+        # Try to initialize MySQL if not installed properly
+        if ! command -v mysqld &> /dev/null; then
+            print_warning "MySQL server not found, reinstalling..."
+            apt install -y mysql-server --reinstall >> "$INSTALL_LOG" 2>&1
+        fi
+        
+        # Initialize MySQL if needed
+        if [ ! -d "/var/lib/mysql/mysql" ]; then
+            print_info "Initializing MySQL database..."
+            mysqld --initialize-insecure --user=mysql >> "$INSTALL_LOG" 2>&1
+        fi
+        
+        # Start MySQL service
+        systemctl start mysql >> "$INSTALL_LOG" 2>&1
+        systemctl enable mysql >> "$INSTALL_LOG" 2>&1
+        sleep 5
+    fi
+fi
+
+# Check if MySQL is running
+if systemctl is-active --quiet mysql; then
+    print_success "MySQL service is running"
+else
+    print_error "Failed to start MySQL service. Attempting to restart..."
+    systemctl restart mysql >> "$INSTALL_LOG" 2>&1
+    sleep 3
+    
+    if ! systemctl is-active --quiet mysql; then
+        print_error "MySQL service failed to start. Please check logs and try:"
+        print_error "sudo systemctl status mysql"
+        print_error "sudo journalctl -xe | grep mysql"
+        exit 1
+    fi
+fi
+
+# Wait for MySQL socket to be created
+print_info "Waiting for MySQL socket..."
+for i in {1..30}; do
+    if [ -S /var/run/mysqld/mysqld.sock ] 2>/dev/null || [ -S /tmp/mysql.sock ] 2>/dev/null; then
+        print_success "MySQL socket found"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        print_warning "MySQL socket not found, creating manually..."
+        mkdir -p /var/run/mysqld
+        chown mysql:mysql /var/run/mysqld
+        systemctl restart mysql
+        sleep 3
+    fi
+    sleep 1
+done
+
+# Set root password if not set (for fresh install)
+print_info "Securing MySQL installation..."
+if ! mysql -e "SELECT 1" &>/dev/null; then
+    print_warning "MySQL has no root password. Setting default password..."
+    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'root';" 2>/dev/null || true
+fi
+
+# Create database and user
+print_info "Creating SlowDNS database and user..."
+mysql -e "CREATE DATABASE IF NOT EXISTS slowdns_panel;" 2>/dev/null || {
+    print_error "Failed to connect to MySQL. Trying with root password..."
+    mysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS slowdns_panel;" 2>/dev/null || {
+        print_error "MySQL connection failed. Please check MySQL status and try again."
+        print_error "You can try: sudo mysql_secure_installation"
+        exit 1
+    }
+}
+
+mysql -e "CREATE USER IF NOT EXISTS 'slowdns_admin'@'localhost' IDENTIFIED BY 'SlowDNS@2024';" 2>/dev/null || \
+mysql -uroot -proot -e "CREATE USER IF NOT EXISTS 'slowdns_admin'@'localhost' IDENTIFIED BY 'SlowDNS@2024';" 2>/dev/null
+
+mysql -e "GRANT ALL PRIVILEGES ON slowdns_panel.* TO 'slowdns_admin'@'localhost';" 2>/dev/null || \
+mysql -uroot -proot -e "GRANT ALL PRIVILEGES ON slowdns_panel.* TO 'slowdns_admin'@'localhost';" 2>/dev/null
+
+mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || \
+mysql -uroot -proot -e "FLUSH PRIVILEGES;" 2>/dev/null
 
 # Create database tables
-mysql slowdns_panel << 'EOF'
+print_info "Creating database tables..."
+MYSQL_CMD="mysql"
+if ! mysql -e "SELECT 1" &>/dev/null; then
+    MYSQL_CMD="mysql -uroot -proot"
+fi
+
+$MYSQL_CMD slowdns_panel << 'EOF'
 CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(50) UNIQUE NOT NULL,
@@ -188,12 +282,18 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 EOF
 
 # Insert admin user
+print_info "Creating admin user..."
 ADMIN_HASH=$(php -r "echo password_hash('$ADMIN_PASS', PASSWORD_DEFAULT);")
-mysql slowdns_panel << EOF
+$MYSQL_CMD slowdns_panel << EOF
 INSERT INTO users (username, password, role, email, ip_limit, bandwidth_limit, status, max_clients) 
 VALUES ('$ADMIN_USER', '$ADMIN_HASH', 'admin', 'admin@example.com', 999, 1099511627776, 'active', 999)
 ON DUPLICATE KEY UPDATE password='$ADMIN_HASH';
 EOF
+
+print_success "MySQL database configured successfully"
+# =============================================
+# END OF FIXED MYSQL SECTION
+# =============================================
 
 # Create web directory
 print_info "Creating web directory..."
