@@ -140,17 +140,24 @@ start_dns_forwarder() {
     pkill -f "dns-forwarder" 2>/dev/null
     
     # Start DNS forwarder (local port 53 -> server)
-    socat UDP4-LISTEN:53,reuseaddr,fork UDP4:$SERVER_IP:$WORKING_PORT &
-    DNS_PID=$!
+    # Try port 53 first, fallback to 5353 if permission denied
+    if socat UDP4-LISTEN:53,reuseaddr,fork UDP4:$SERVER_IP:$WORKING_PORT 2>/dev/null &
+    then
+        DNS_PID=$!
+        success "DNS forwarder started on port 53 (PID: $DNS_PID)"
+    else
+        warning "Port 53 failed, trying port 5353..."
+        socat UDP4-LISTEN:5353,reuseaddr,fork UDP4:$SERVER_IP:$WORKING_PORT &
+        DNS_PID=$!
+        success "DNS forwarder started on port 5353 (PID: $DNS_PID)"
+    fi
     
     # Also start TCP DNS for apps that need it
-    socat TCP4-LISTEN:53,reuseaddr,fork TCP4:$SERVER_IP:$WORKING_PORT &
+    socat TCP4-LISTEN:5353,reuseaddr,fork TCP4:$SERVER_IP:$WORKING_PORT &
     DNS_TCP_PID=$!
     
     echo $DNS_PID > /tmp/dns_pid
     echo $DNS_TCP_PID > /tmp/dns_tcp_pid
-    
-    success "DNS forwarder started (PID: $DNS_PID, $DNS_TCP_PID)"
 }
 
 set_dns_settings() {
@@ -245,7 +252,8 @@ if __name__ == "__main__":
     main()
 EOF
     
-    # Start VPN tunnel
+    # Make executable and start VPN tunnel
+    chmod +x $HOME/vpn_tunnel.py
     python3 $HOME/vpn_tunnel.py &
     VPN_PID=$!
     echo $VPN_PID > /tmp/vpn_pid
@@ -270,9 +278,13 @@ python3 -m http.server 8080 --bind 127.0.0.1 &
 EOF
     
     chmod +x $HOME/start_proxy.sh
-    $HOME/start_proxy.sh &
     
-    success "Proxy servers started"
+    # Try to start proxy (may fail if no SSH, that's OK)
+    $HOME/start_proxy.sh &
+    PROXY_PID=$!
+    echo $PROXY_PID > /tmp/proxy_pid
+    
+    success "Proxy servers started (PID: $PROXY_PID)"
 }
 
 configure_apps() {
@@ -326,28 +338,45 @@ test_vpn() {
     log "Testing VPN connection..."
     
     echo -e "${YELLOW}1. Testing DNS resolution:${NC}"
-    if nslookup google.com 127.0.0.1; then
+    if nslookup google.com 127.0.0.1 2>/dev/null | grep -q "Address"; then
         success "DNS working"
     else
-        error "DNS failed"
+        # Try port 5353 as fallback
+        if dig @127.0.0.1 -p 5353 google.com +short 2>/dev/null | grep -q "."; then
+            success "DNS working on port 5353"
+        else
+            error "DNS failed"
+        fi
     fi
     
     echo -e "${YELLOW}2. Testing connection through VPN:${NC}"
-    OLD_IP=$(curl -s ifconfig.me)
-    NEW_IP=$(curl -s --dns-servers 127.0.0.1 ifconfig.me)
     
+    # Get original IP
+    OLD_IP=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || echo "Unknown")
     echo "Original IP: $OLD_IP"
-    echo "Current IP: $NEW_IP"
     
-    if [ "$NEW_IP" != "$OLD_IP" ]; then
-        success "VPN is working! IP changed"
+    # Test if DNS is actually routing
+    echo -e "${YELLOW}3. Testing DNS routing:${NC}"
+    DNS_TEST=$(dig +short google.com @127.0.0.1 2>/dev/null | head -1)
+    if [ -n "$DNS_TEST" ]; then
+        success "DNS routing working ($DNS_TEST)"
+        
+        # Try to get new IP via dig (more reliable)
+        NEW_IP=$(dig +short myip.opendns.com @resolver1.opendns.com 2>/dev/null || echo "Unknown")
+        echo "Current IP via DNS: $NEW_IP"
+        
+        if [ "$NEW_IP" != "$OLD_IP" ] && [ "$NEW_IP" != "Unknown" ]; then
+            success "VPN is working! IP changed"
+        else
+            warning "IP not changed. Testing direct connection..."
+        fi
     else
-        warning "IP not changed. VPN might not be fully active"
+        error "DNS not routing traffic"
     fi
     
-    echo -e "${YELLOW}3. Testing speed:${NC}"
-    curl -o /dev/null -w "Download speed: %{speed_download} bytes/sec\n" \
-         --dns-servers 127.0.0.1 http://ipv4.download.thinkbroadband.com/5MB.zip
+    echo -e "${YELLOW}4. Testing speed:${NC}"
+    timeout 10 curl -o /dev/null -w "Download: %{speed_download} bytes/sec\n" \
+         http://ipv4.download.thinkbroadband.com/1MB.zip 2>/dev/null || echo "Speed test failed"
 }
 
 create_management_script() {
@@ -365,6 +394,7 @@ EOF
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Stopping VPN..."
 pkill -f "socat.*53" 2>/dev/null
+pkill -f "socat.*5353" 2>/dev/null
 pkill -f "vpn_tunnel.py" 2>/dev/null
 pkill -f "start_proxy.sh" 2>/dev/null
 setprop net.dns1 8.8.8.8 2>/dev/null
@@ -375,17 +405,29 @@ EOF
     cat > $HOME/vpn_status.sh << EOF
 #!/data/data/com.termux/files/usr/bin/bash
 echo "=== VPN Status ==="
-echo "DNS Process: \$(ps aux | grep -E 'socat.*53' | grep -v grep | wc -l) running"
+echo "DNS Process: \$(ps aux | grep -E 'socat.*(53|5353)' | grep -v grep | wc -l) running"
 echo "VPN Tunnel: \$(ps aux | grep vpn_tunnel.py | grep -v grep | wc -l) running"
+echo "Proxy: \$(ps aux | grep start_proxy.sh | grep -v grep | wc -l) running"
 echo "Current DNS: \$(getprop net.dns1 2>/dev/null || echo 'Not set')"
-echo "Current IP: \$(curl -s ifconfig.me)"
-echo "Test DNS: nslookup google.com 127.0.0.1"
+echo "Current IP: \$(curl -s https://api.ipify.org 2>/dev/null || echo 'Unknown')"
+echo "Test DNS: dig google.com @127.0.0.1 +short"
+EOF
+
+    # Auto-install all script
+    cat > $HOME/install_all.sh << EOF
+#!/data/data/com.termux/files/usr/bin/bash
+echo "=========================================="
+echo "    INSTALLING EVERYTHING AT ONCE"
+echo "=========================================="
+cd \$HOME
+./termux_vpn.sh --install-all
 EOF
     
     # Make executable
     chmod +x $HOME/start_vpn.sh
     chmod +x $HOME/stop_vpn.sh
     chmod +x $HOME/vpn_status.sh
+    chmod +x $HOME/install_all.sh
     
     success "Management scripts created"
 }
@@ -411,6 +453,65 @@ start_vpn() {
     success "VPN started successfully!"
 }
 
+# ==========================================
+# NEW: INSTALL ALL FUNCTION
+# ==========================================
+
+install_all() {
+    echo -e "${CYAN}"
+    echo "=========================================="
+    echo "    INSTALLING EVERYTHING AT ONCE"
+    echo "=========================================="
+    echo -e "${NC}"
+    
+    log "Starting complete installation..."
+    
+    # 1. Check internet
+    if ! check_internet; then
+        error "No internet connection. Aborting."
+        return 1
+    fi
+    
+    # 2. Install dependencies
+    install_dependencies
+    
+    # 3. Find working port
+    if ! find_working_port; then
+        error "Could not find working port. Aborting."
+        return 1
+    fi
+    
+    # 4. Setup network
+    setup_iptables
+    create_vpn_interface
+    
+    # 5. Create management scripts
+    create_management_script
+    
+    # 6. Start VPN
+    start_vpn
+    
+    # 7. Test VPN
+    test_vpn
+    
+    # 8. Setup auto-start
+    auto_start_setup
+    
+    echo -e "${GREEN}"
+    echo "=========================================="
+    echo "    INSTALLATION COMPLETE!"
+    echo "=========================================="
+    echo -e "${NC}"
+    echo "What to do next:"
+    echo "1. Check VPN status: ./vpn_status.sh"
+    echo "2. Stop VPN: ./stop_vpn.sh"
+    echo "3. Start VPN again: ./start_vpn.sh"
+    echo "4. Test VPN: ./termux_vpn.sh (then choose option 5)"
+    echo ""
+    echo "VPN will auto-start when you open Termux"
+    echo "=========================================="
+}
+
 show_menu() {
     clear
     echo -e "${CYAN}"
@@ -431,9 +532,10 @@ show_menu() {
     echo "6. Configure Apps"
     echo "7. View Logs"
     echo "8. Auto-start on Boot"
-    echo "9. Exit"
+    echo "9. INSTALL ALL (Recommended)"
+    echo "0. Exit"
     echo
-    echo -n "Select option [1-9]: "
+    echo -n "Select option [0-9]: "
 }
 
 auto_start_setup() {
@@ -444,6 +546,7 @@ auto_start_setup() {
         echo "" >> $HOME/.bashrc
         echo "# Auto-start VPN" >> $HOME/.bashrc
         echo "if [ -f ~/start_vpn.sh ]; then" >> $HOME/.bashrc
+        echo "    sleep 2" >> $HOME/.bashrc
         echo "    ~/start_vpn.sh &" >> $HOME/.bashrc
         echo "fi" >> $HOME/.bashrc
         success "Auto-start configured in .bashrc"
@@ -475,11 +578,21 @@ main() {
     touch "$LOG_FILE"
     
     # Parse arguments
-    if [ "$1" = "--start" ]; then
-        start_vpn
-        test_vpn
-        exit 0
-    fi
+    case "$1" in
+        "--start")
+            start_vpn
+            test_vpn
+            exit 0
+            ;;
+        "--install-all")
+            install_all
+            exit 0
+            ;;
+        "--test")
+            test_vpn
+            exit 0
+            ;;
+    esac
     
     # Main menu loop
     while true; do
@@ -515,7 +628,7 @@ main() {
                 ;;
             5)
                 test_vpn
-                echo -e "${YELLow}Press Enter to continue...${NC}"
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
                 read
                 ;;
             6)
@@ -535,6 +648,11 @@ main() {
                 read
                 ;;
             9)
+                install_all
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
+                read
+                ;;
+            0)
                 echo -e "${GREEN}[✓] Exiting${NC}"
                 exit 0
                 ;;
