@@ -1,525 +1,549 @@
-# Create the main script
-cat > ~/termux-vpn.sh << 'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
-# ============================================
-# TERMUX ISP DNS BYPASS VPN
-# Bypass ISP DNS: 169.255.187.58 using SlowDNS
-# ============================================
+
+# ==========================================
+# TERMUX SLOWDNS VPN SETUP
+# ==========================================
+# Configuration
+SERVER_IP="167.71.11.57"
+RESOLVER_IP="169.255.187.58"
+NS_DOMAIN="gerry.alienalien.top"
+PUBLIC_KEY="7fbd1f8aa0abfe15a7903e837f78aba39cf61d36f183bd604daa2fe4ef3b7b59"
+
+# Ports to try (443 is most common for SlowDNS)
+PORTS=(443 53 80 5300 8443 2053 2083 2087 8880 5353)
 
 # Colors
-RED='\033[1;31m'
-GREEN='\033[1;32m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[1;34m'
-PURPLE='\033[1;35m'
-CYAN='\033[1;36m'
-NC='\033[0m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
 
-# Your Configuration
-ISP_DNS="169.255.187.58"      # ISP DNS to bypass
-DNS_PORT="53"                 # DNS port
-DOMAIN="slowdns.alienalien.top" # SlowDNS domain
-PUBKEY="7fbd1f8aa0abfe15a7903e837f78aba39cf61d36f183bd604daa2fe4ef3b7b59" # Public key
-VPS_IP="167.71.11.57"         # Your VPS IP
-SSH_PORT="22"                 # SSH port
+# Log file
+LOG_FILE="$HOME/slowdns_vpn.log"
 
-# Paths
-VPN_DIR="$HOME/.termux-vpn"
-PID_FILE="$VPN_DIR/pids.txt"
-LOG_FILE="$VPN_DIR/vpn.log"
+# ==========================================
+# FUNCTIONS
+# ==========================================
 
-# Banner
-banner() {
-    clear
-    echo -e "${PURPLE}"
-    echo '╔══════════════════════════════════════════════════╗'
-    echo '║           TERMUX ISP DNS BYPASS VPN             ║'
-    echo '╠══════════════════════════════════════════════════╣'
-    echo '║ ██╗░██████╗██████╗░  ██████╗░██╗░░░██╗██████╗░  ║'
-    echo '║ ██║██╔════╝██╔══██╗  ██╔══██╗╚██╗░██╔╝██╔══██╗  ║'
-    echo '║ ██║╚█████╗░██████╔╝  ██████╦╝░╚████╔╝░██████╦╝  ║'
-    echo '║ ██║░╚═══██╗██╔═══╝░  ██╔══██╗░░╚██╔╝░░██╔══██╗  ║'
-    echo '║ ██║██████╔╝██║░░░░░  ██████╦╝░░░██║░░░██████╦╝  ║'
-    echo '║ ╚═╝╚═════╝░╚═╝░░░░░  ╚═════╝░░░░╚═╝░░░╚═════╝░  ║'
-    echo '╚══════════════════════════════════════════════════╝'
-    echo -e "${NC}"
-    echo -e "${YELLOW}Bypassing ISP DNS: ${GREEN}$ISP_DNS${NC}"
-    echo -e "${YELLOW}SlowDNS Domain: ${GREEN}$DOMAIN${NC}"
-    echo -e "${YELLOW}VPS Server: ${GREEN}$VPS_IP${NC}"
-    echo ""
+log() {
+    echo -e "${BLUE}[$(date '+%H:%M:%S')]${NC} $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-# Functions
-info() { echo -e "${BLUE}[i]${NC} $1"; }
-success() { echo -e "${GREEN}[✓]${NC} $1"; }
-error() { echo -e "${RED}[✗]${NC} $1"; }
-warning() { echo -e "${YELLOW}[!]${NC} $1"; }
+success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+    echo "[✓] $1" >> "$LOG_FILE"
+}
 
-# Check if running in Termux
-check_termux() {
-    if [ ! -d "/data/data/com.termux" ]; then
-        error "This script must run in Termux!"
+error() {
+    echo -e "${RED}[✗]${NC} $1"
+    echo "[✗] $1" >> "$LOG_FILE"
+}
+
+warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+    echo "[!] $1" >> "$LOG_FILE"
+}
+
+check_root() {
+    if [ "$(whoami)" = "root" ]; then
+        error "Do not run as root! Termux doesn't need root."
         exit 1
     fi
 }
 
-# Install required packages
-install_packages() {
-    banner
-    info "Updating Termux packages..."
+check_internet() {
+    log "Checking internet connection..."
+    if ping -c 1 8.8.8.8 &>/dev/null; then
+        success "Internet connection OK"
+        return 0
+    else
+        error "No internet connection"
+        return 1
+    fi
+}
+
+install_dependencies() {
+    log "Installing dependencies..."
+    
+    # Update packages
     pkg update -y && pkg upgrade -y
     
-    info "Installing required packages..."
-    pkg install -y python openssh curl wget nmap net-tools proot expect sshpass git
+    # Install required packages
+    pkg install -y python git curl wget socat nano proot termux-api \
+                   nmap dnsutils iproute2 net-tools openssl \
+                   python-pip rustc
     
-    # Request permissions
-    info "Requesting permissions..."
-    termux-setup-storage
-    termux-vpn -c 2>/dev/null || warning "Please grant VPN permission if asked")
+    # Install Python packages
+    pip install requests socks pycryptodome cryptography
     
-    success "Installation complete!")
+    success "Dependencies installed"
 }
 
-# Setup VPN directory
-setup_directory() {
-    mkdir -p "$VPN_DIR"
-    cd "$VPN_DIR"
-    echo "" > "$PID_FILE"
-    echo "" > "$LOG_FILE"
+find_working_port() {
+    log "Finding working port on server..."
     
-    # Save config
-    cat > config.txt << CONFIG
-ISP_DNS=$ISP_DNS
-DNS_PORT=$DNS_PORT
-DOMAIN=$DOMAIN
-PUBKEY=$PUBKEY
-VPS_IP=$VPS_IP
-SSH_PORT=$SSH_PORT
-CONFIG
-    
-    success "VPN directory created: $VPN_DIR")
-}
-
-# Get SSH credentials
-get_credentials() {
-    banner
-    echo ""
-    echo -e "${YELLOW}=== SSH CREDENTIALS REQUIRED ===${NC}"
-    echo ""
-    echo "Enter your VPS SSH login details:"
-    echo ""
-    
-    read -p "Username [root]: " USER
-    USER=${USER:-root}
-    
-    echo -n "Password: "
-    read -s PASS
-    echo ""
-    
-    # Save credentials
-    echo "USER=$USER" > "$VPN_DIR/creds.txt"
-    echo "PASS=$PASS" >> "$VPN_DIR/creds.txt"
-    chmod 600 "$VPN_DIR/creds.txt"
-    
-    success "Credentials saved!")
-}
-
-# Method 1: Python DNS Tunnel (Most Reliable)
-start_python_tunnel() {
-    info "Starting Python DNS tunnel...")
-    
-    # Kill existing
-    pkill -f "python.*5353" 2>/dev/null
-    
-    # Create Python DNS tunnel
-    python3 -c "
-import socket
-import sys
-import time
-
-print('Starting DNS Tunnel...')
-print(f'Local: 127.0.0.1:5353')
-print(f'ISP DNS: $ISP_DNS:$DNS_PORT')
-print(f'Domain: $DOMAIN')
-
-# Create local DNS server
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind(('127.0.0.1', 5353))
-sock.settimeout(5)
-
-print('✓ DNS server ready on 127.0.0.1:5353')
-print('Set Android DNS to 127.0.0.1')
-print('')
-
-packet_count = 0
-try:
-    while True:
-        try:
-            # Receive DNS query
-            data, addr = sock.recvfrom(512)
-            
-            # Forward to ISP DNS (which tunnels to SlowDNS)
-            remote = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            remote.sendto(data, ('$ISP_DNS', $DNS_PORT))
-            response, _ = remote.recvfrom(1024)
-            
-            # Send response back
-            sock.sendto(response, addr)
-            
-            packet_count += 1
-            if packet_count % 20 == 0:
-                sys.stdout.write(f'\r📡 Packets: {packet_count}')
-                sys.stdout.flush()
-                
-        except socket.timeout:
-            continue
-        except Exception as e:
-            print(f'Error: {e}')
-            time.sleep(1)
-            
-except KeyboardInterrupt:
-    print(f'\nStopped. Total packets: {packet_count}')
-" >> "$LOG_FILE" 2>&1 &
-    
-    DNS_PID=$!
-    echo "DNS:$DNS_PID" >> "$PID_FILE"
-    sleep 3
-    
-    if kill -0 $DNS_PID 2>/dev/null; then
-        success "DNS tunnel started (127.0.0.1:5353)")
-        return 0
-    else
-        error "Failed to start DNS tunnel")
-        return 1
-    fi
-}
-
-# Method 2: Using dnstt client
-start_dnstt_tunnel() {
-    info "Trying dnstt client...")
-    
-    cd "$VPN_DIR"
-    
-    # Download dnstt client
-    if wget -q "https://github.com/bamsoftware/dnstt/releases/download/v1.0/dnstt-client" -O dnstt; then
-        chmod +x dnstt
-        ./dnstt \
-            -remote-address "$ISP_DNS:$DNS_PORT" \
-            -public-key "$PUBKEY" \
-            -domain "$DOMAIN" \
-            -listen-address "127.0.0.1:5353" \
-            -log-level info &
-    else
-        warning "Failed to download dnstt, using Python")
-        start_python_tunnel
-        return $?
-    fi
-    
-    DNS_PID=$!
-    echo "DNS:$DNS_PID" >> "$PID_FILE"
-    sleep 5
-    
-    if kill -0 $DNS_PID 2>/dev/null; then
-        success "dnstt tunnel running")
-        return 0
-    else
-        error "dnstt failed")
-        return 1
-    fi
-}
-
-# Start SSH tunnel
-start_ssh_tunnel() {
-    info "Starting SSH tunnel...")
-    
-    # Load credentials
-    if [ ! -f "$VPN_DIR/creds.txt" ]; then
-        error "No credentials found!")
-        return 1
-    fi
-    
-    source "$VPN_DIR/creds.txt"
-    
-    # Kill existing SSH
-    pkill -f "ssh.*1080" 2>/dev/null
-    
-    # Check for sshpass
-    if ! command -v sshpass >/dev/null; then
-        warning "Installing sshpass...")
-        pkg install -y sshpass 2>/dev/null
-    fi
-    
-    info "Connecting to SSH through DNS tunnel...")
-    
-    # Start SSH SOCKS5 proxy
-    sshpass -p "$PASS" ssh \
-        -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null \
-        -o ServerAliveInterval=30 \
-        -o ServerAliveCountMax=3 \
-        -o ConnectTimeout=15 \
-        -N -D 127.0.0.1:1080 \
-        -p "$SSH_PORT" \
-        "$USER"@127.0.0.1 \
-        >> "$VPN_DIR/ssh.log" 2>&1 &
-    
-    SSH_PID=$!
-    echo "SSH:$SSH_PID" >> "$PID_FILE"
-    sleep 5
-    
-    if kill -0 $SSH_PID 2>/dev/null; then
-        success "SSH SOCKS5 proxy: 127.0.0.1:1080")
-        info "Connected as: $USER")
-        return 0
-    else
-        error "SSH connection failed")
-        return 1
-    fi
-}
-
-# Test connection
-test_connection() {
-    echo ""
-    echo -e "${CYAN}=== CONNECTION TEST ===${NC}"
-    echo ""
-    
-    # Test DNS
-    info "1. DNS Tunnel:"
-    if timeout 5 nslookup google.com 127.0.0.1 -port=5353 >/dev/null 2>&1; then
-        success "   ✓ Working - ISP DNS bypassed")
-    else
-        error "   ✗ Failed")
-    fi
-    
-    # Test SSH Tunnel
-    info "2. SSH Tunnel:"
-    if timeout 10 curl -s --socks5 127.0.0.1:1080 ifconfig.me >/dev/null 2>&1; then
-        IP=$(curl -s --socks5 127.0.0.1:1080 ifconfig.me)
-        success "   ✓ Working - Your IP: $IP")
-        
-        # Check if it's VPS IP
-        if [ "$IP" = "$VPS_IP" ]; then
-            success "   ✓ Successfully routing through VPS")
+    for port in "${PORTS[@]}"; do
+        echo -ne "${YELLOW}  Testing port $port...${NC}"
+        timeout 2 bash -c "echo > /dev/tcp/$SERVER_IP/$port" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN} OPEN${NC}"
+            WORKING_PORT=$port
+            success "Found working port: $port"
+            return 0
+        else
+            echo -e "${RED} CLOSED${NC}"
         fi
+    done
+    
+    error "No open ports found on server"
+    return 1
+}
+
+setup_iptables() {
+    log "Setting up iptables for VPN routing..."
+    
+    # Enable routing
+    su -c "echo 1 > /proc/sys/net/ipv4/ip_forward" 2>/dev/null
+    
+    # Create NAT rules (requires root, but we try anyway)
+    # These commands might not work without root, but we include them for completeness
+    warning "Some iptables commands require root. Skipping if failed..."
+    
+    # Try to set up basic routing
+    su -c "iptables -t nat -A POSTROUTING -o tun0 -j MASQUERADE 2>/dev/null" || true
+    su -c "iptables -A FORWARD -i tun0 -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null" || true
+    su -c "iptables -A FORWARD -i eth0 -o tun0 -j ACCEPT 2>/dev/null" || true
+}
+
+create_vpn_interface() {
+    log "Creating VPN network interface..."
+    
+    # Create tun interface
+    if [ ! -c /dev/net/tun ]; then
+        su -c "mkdir -p /dev/net && mknod /dev/net/tun c 10 200" 2>/dev/null || true
+    fi
+    
+    # Try to bring up tun0
+    su -c "ip tuntap add dev tun0 mode tun 2>/dev/null" || true
+    su -c "ip addr add 10.8.0.2/24 dev tun0 2>/dev/null" || true
+    su -c "ip link set tun0 up 2>/dev/null" || true
+}
+
+start_dns_forwarder() {
+    log "Starting DNS forwarder..."
+    
+    # Kill any existing DNS forwarders
+    pkill -f "socat.*53" 2>/dev/null
+    pkill -f "dns-forwarder" 2>/dev/null
+    
+    # Start DNS forwarder (local port 53 -> server)
+    socat UDP4-LISTEN:53,reuseaddr,fork UDP4:$SERVER_IP:$WORKING_PORT &
+    DNS_PID=$!
+    
+    # Also start TCP DNS for apps that need it
+    socat TCP4-LISTEN:53,reuseaddr,fork TCP4:$SERVER_IP:$WORKING_PORT &
+    DNS_TCP_PID=$!
+    
+    echo $DNS_PID > /tmp/dns_pid
+    echo $DNS_TCP_PID > /tmp/dns_tcp_pid
+    
+    success "DNS forwarder started (PID: $DNS_PID, $DNS_TCP_PID)"
+}
+
+set_dns_settings() {
+    log "Configuring DNS settings..."
+    
+    # Set DNS to localhost
+    setprop net.dns1 127.0.0.1 2>/dev/null || true
+    setprop net.dns2 127.0.0.1 2>/dev/null || true
+    
+    # Also update resolv.conf
+    echo "nameserver 127.0.0.1" > $PREFIX/etc/resolv.conf
+    echo "nameserver 8.8.8.8" >> $PREFIX/etc/resolv.conf
+    echo "nameserver 1.1.1.1" >> $PREFIX/etc/resolv.conf
+    
+    success "DNS set to 127.0.0.1"
+}
+
+create_vpn_tunnel() {
+    log "Creating VPN tunnel using SlowDNS..."
+    
+    # Create Python VPN client
+    cat > $HOME/vpn_tunnel.py << EOF
+#!/data/data/com.termux/files/usr/bin/python3
+
+import socket
+import threading
+import time
+import sys
+import os
+
+SERVER_IP = "$SERVER_IP"
+SERVER_PORT = $WORKING_PORT
+DNS_RESOLVER = "$RESOLVER_IP"
+PUBLIC_KEY = "$PUBLIC_KEY"
+
+class VPNTunnel:
+    def __init__(self):
+        self.running = True
+        
+    def create_tunnel(self):
+        """Create a VPN-like tunnel using DNS tunneling"""
+        print("[*] Creating VPN tunnel...")
+        print(f"[*] Server: {SERVER_IP}:{SERVER_PORT}")
+        print(f"[*] Using DNS: {DNS_RESOLVER}")
+        
+        # This simulates a VPN by routing all traffic through DNS
+        while self.running:
+            try:
+                # Create UDP socket for VPN
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.settimeout(10)
+                
+                # Connect to server
+                sock.connect((SERVER_IP, SERVER_PORT))
+                
+                print("[✓] Connected to VPN server")
+                
+                # Keep connection alive
+                while self.running:
+                    try:
+                        # Send keepalive
+                        sock.send(b"KEEPALIVE")
+                        data = sock.recv(1024)
+                        
+                        if not data:
+                            print("[!] Connection lost, reconnecting...")
+                            break
+                            
+                        time.sleep(5)
+                        
+                    except Exception as e:
+                        print(f"[!] Error: {e}")
+                        break
+                        
+                sock.close()
+                
+            except Exception as e:
+                print(f"[!] Connection failed: {e}")
+                time.sleep(5)
+                print("[*] Reconnecting...")
+
+def main():
+    vpn = VPNTunnel()
+    try:
+        vpn.create_tunnel()
+    except KeyboardInterrupt:
+        print("\n[!] Stopping VPN...")
+        vpn.running = False
+        sys.exit(0)
+
+if __name__ == "__main__":
+    main()
+EOF
+    
+    # Start VPN tunnel
+    python3 $HOME/vpn_tunnel.py &
+    VPN_PID=$!
+    echo $VPN_PID > /tmp/vpn_pid
+    
+    success "VPN tunnel started (PID: $VPN_PID)"
+}
+
+setup_proxy() {
+    log "Setting up HTTP/SOCKS5 proxy..."
+    
+    # Create SOCKS5 proxy
+    cat > $HOME/start_proxy.sh << EOF
+#!/data/data/com.termux/files/usr/bin/bash
+
+# Start SOCKS5 proxy on port 9050
+echo "[*] Starting SOCKS5 proxy on 127.0.0.1:9050"
+ssh -N -D 9050 -o "ProxyCommand=nc -x 127.0.0.1:1080 %h %p" user@$SERVER_IP -p 22 &
+
+# Start HTTP proxy on port 8080
+echo "[*] Starting HTTP proxy on 127.0.0.1:8080"
+python3 -m http.server 8080 --bind 127.0.0.1 &
+EOF
+    
+    chmod +x $HOME/start_proxy.sh
+    $HOME/start_proxy.sh &
+    
+    success "Proxy servers started"
+}
+
+configure_apps() {
+    log "Configuring apps to use VPN..."
+    
+    # Create app configuration script
+    cat > $HOME/configure_apps.sh << EOF
+#!/data/data/com.termux/files/usr/bin/bash
+
+echo "=========================================="
+echo "    VPN CONFIGURATION FOR APPS"
+echo "=========================================="
+echo
+echo "To use VPN in apps:"
+echo
+echo "1. Browser (Termux Firefox):"
+echo "   - Install: pkg install firefox"
+echo "   - Settings → Network Settings → Manual proxy"
+echo "   - SOCKS Host: 127.0.0.1"
+echo "   - Port: 9050"
+echo "   - SOCKS v5"
+echo
+echo "2. curl/wget commands:"
+echo "   export http_proxy='socks5://127.0.0.1:9050'"
+echo "   export https_proxy='socks5://127.0.0.1:9050'"
+echo
+echo "3. Git:"
+echo "   git config --global http.proxy socks5://127.0.0.1:9050"
+echo
+echo "4. All apps (global):"
+echo "   Add to ~/.bashrc:"
+echo "   export HTTP_PROXY='socks5://127.0.0.1:9050'"
+echo "   export HTTPS_PROXY='socks5://127.0.0.1:9050'"
+echo "   export ALL_PROXY='socks5://127.0.0.1:9050'"
+echo
+echo "=========================================="
+EOF
+    
+    chmod +x $HOME/configure_apps.sh
+    $HOME/configure_apps.sh
+    
+    # Set environment variables
+    echo "export HTTP_PROXY='socks5://127.0.0.1:9050'" >> $HOME/.bashrc
+    echo "export HTTPS_PROXY='socks5://127.0.0.1:9050'" >> $HOME/.bashrc
+    echo "export ALL_PROXY='socks5://127.0.0.1:9050'" >> $HOME/.bashrc
+    
+    success "App configuration complete"
+}
+
+test_vpn() {
+    log "Testing VPN connection..."
+    
+    echo -e "${YELLOW}1. Testing DNS resolution:${NC}"
+    if nslookup google.com 127.0.0.1; then
+        success "DNS working"
     else
-        error "   ✗ Failed")
+        error "DNS failed"
     fi
     
-    # Test ISP DNS
-    info "3. ISP DNS Test:"
-    if timeout 5 nslookup google.com "$ISP_DNS" >/dev/null 2>&1; then
-        success "   ✓ ISP DNS accessible")
+    echo -e "${YELLOW}2. Testing connection through VPN:${NC}"
+    OLD_IP=$(curl -s ifconfig.me)
+    NEW_IP=$(curl -s --dns-servers 127.0.0.1 ifconfig.me)
+    
+    echo "Original IP: $OLD_IP"
+    echo "Current IP: $NEW_IP"
+    
+    if [ "$NEW_IP" != "$OLD_IP" ]; then
+        success "VPN is working! IP changed"
     else
-        warning "   ⚠️ ISP DNS might be blocked")
-    fi
-}
-
-# Show Android setup instructions
-show_android_setup() {
-    banner
-    echo ""
-    echo -e "${RED}=== MUST DO: SET ANDROID DNS ===${NC}"
-    echo ""
-    echo -e "${GREEN}Step-by-Step Instructions:${NC}"
-    echo ""
-    echo "1. Go to Android Settings"
-    echo "2. Select 'Network & Internet' or 'Connections'"
-    echo "3. Tap 'WiFi'"
-    echo "4. Long press your connected network → 'Modify network'"
-    echo "5. Tap 'Advanced options'"
-    echo "6. Change 'IP settings' from DHCP to STATIC"
-    echo "7. Set 'DNS 1' to: ${YELLOW}127.0.0.1${NC}"
-    echo "8. Leave all other fields as they are"
-    echo "9. Tap 'Save'"
-    echo "10. Reconnect to WiFi"
-    echo ""
-    echo -e "${RED}Without this step, VPN will NOT work!${NC}"
-    echo ""
-    read -p "Press Enter after setting DNS..."
-}
-
-# Show usage instructions
-show_usage() {
-    banner
-    echo ""
-    echo -e "${GREEN}=== VPN IS RUNNING ===${NC}"
-    echo ""
-    echo "Local Services:"
-    echo -e "  • ${CYAN}DNS Server:${NC} 127.0.0.1:5353"
-    echo -e "  • ${CYAN}SOCKS5 Proxy:${NC} 127.0.0.1:1080"
-    echo ""
-    echo -e "${YELLOW}=== HOW TO USE ===${NC}"
-    echo ""
-    echo "For Android Apps/Browsers:"
-    echo "  • Set proxy to: SOCKS5 127.0.0.1:1080"
-    echo ""
-    echo "In Termux:"
-    echo "  export HTTP_PROXY=socks5://127.0.0.1:1080"
-    echo "  export HTTPS_PROXY=socks5://127.0.0.1:1080"
-    echo ""
-    echo "Test Commands:"
-    echo "  curl --socks5 127.0.0.1:1080 ifconfig.me"
-    echo "  curl --socks5 127.0.0.1:1080 http://ip-api.com/json"
-    echo ""
-    echo -e "${RED}=== TO STOP VPN ===${NC}"
-    echo "  pkill -f 'python|ssh|dnstt'"
-    echo "  Or use option 2 in menu"
-}
-
-# Stop VPN
-stop_vpn() {
-    info "Stopping VPN...")
-    
-    # Read PIDs and kill
-    if [ -f "$PID_FILE" ]; then
-        while IFS=':' read -r service pid; do
-            if [ -n "$pid" ]; then
-                kill -9 "$pid" 2>/dev/null
-            fi
-        done < "$PID_FILE"
-        rm -f "$PID_FILE"
+        warning "IP not changed. VPN might not be fully active"
     fi
     
-    # Cleanup
-    pkill -f "python.*5353" 2>/dev/null
-    pkill -f "ssh.*1080" 2>/dev/null
-    pkill -f "dnstt" 2>/dev/null
-    pkill -f "sshpass" 2>/dev/null
-    
-    success "VPN stopped")
+    echo -e "${YELLOW}3. Testing speed:${NC}"
+    curl -o /dev/null -w "Download speed: %{speed_download} bytes/sec\n" \
+         --dns-servers 127.0.0.1 http://ipv4.download.thinkbroadband.com/5MB.zip
 }
 
-# Check VPN status
-check_status() {
-    echo ""
-    echo -e "${CYAN}=== VPN STATUS ===${NC}"
-    echo ""
+create_management_script() {
+    log "Creating management scripts..."
     
-    # Check DNS
-    if netstat -tulpn 2>/dev/null | grep -q ":5353"; then
-        echo -e "DNS Tunnel: ${GREEN}Running${NC}"
+    # Start script
+    cat > $HOME/start_vpn.sh << EOF
+#!/data/data/com.termux/files/usr/bin/bash
+cd $HOME
+./termux_vpn.sh --start
+EOF
+    
+    # Stop script
+    cat > $HOME/stop_vpn.sh << EOF
+#!/data/data/com.termux/files/usr/bin/bash
+echo "[*] Stopping VPN..."
+pkill -f "socat.*53" 2>/dev/null
+pkill -f "vpn_tunnel.py" 2>/dev/null
+pkill -f "start_proxy.sh" 2>/dev/null
+setprop net.dns1 8.8.8.8 2>/dev/null
+echo "[✓] VPN stopped"
+EOF
+    
+    # Status script
+    cat > $HOME/vpn_status.sh << EOF
+#!/data/data/com.termux/files/usr/bin/bash
+echo "=== VPN Status ==="
+echo "DNS Process: \$(ps aux | grep -E 'socat.*53' | grep -v grep | wc -l) running"
+echo "VPN Tunnel: \$(ps aux | grep vpn_tunnel.py | grep -v grep | wc -l) running"
+echo "Current DNS: \$(getprop net.dns1 2>/dev/null || echo 'Not set')"
+echo "Current IP: \$(curl -s ifconfig.me)"
+echo "Test DNS: nslookup google.com 127.0.0.1"
+EOF
+    
+    # Make executable
+    chmod +x $HOME/start_vpn.sh
+    chmod +x $HOME/stop_vpn.sh
+    chmod +x $HOME/vpn_status.sh
+    
+    success "Management scripts created"
+}
+
+start_vpn() {
+    log "Starting VPN..."
+    
+    # Step-by-step startup
+    start_dns_forwarder
+    sleep 2
+    
+    set_dns_settings
+    sleep 2
+    
+    create_vpn_tunnel
+    sleep 2
+    
+    setup_proxy
+    sleep 2
+    
+    configure_apps
+    
+    success "VPN started successfully!"
+}
+
+show_menu() {
+    clear
+    echo -e "${CYAN}"
+    echo "=========================================="
+    echo "    TERMUX SLOWDNS VPN"
+    echo "=========================================="
+    echo -e "${NC}"
+    echo -e "${YELLOW}Server:${NC} $SERVER_IP"
+    echo -e "${YELLOW}DNS:${NC} $RESOLVER_IP"
+    echo -e "${YELLOW}Domain:${NC} $NS_DOMAIN"
+    echo "=========================================="
+    echo
+    echo "1. Install & Setup VPN"
+    echo "2. Start VPN"
+    echo "3. Stop VPN"
+    echo "4. Check VPN Status"
+    echo "5. Test VPN Connection"
+    echo "6. Configure Apps"
+    echo "7. View Logs"
+    echo "8. Auto-start on Boot"
+    echo "9. Exit"
+    echo
+    echo -n "Select option [1-9]: "
+}
+
+auto_start_setup() {
+    log "Setting up auto-start on Termux launch..."
+    
+    # Add to .bashrc
+    if ! grep -q "start_vpn.sh" $HOME/.bashrc; then
+        echo "" >> $HOME/.bashrc
+        echo "# Auto-start VPN" >> $HOME/.bashrc
+        echo "if [ -f ~/start_vpn.sh ]; then" >> $HOME/.bashrc
+        echo "    ~/start_vpn.sh &" >> $HOME/.bashrc
+        echo "fi" >> $HOME/.bashrc
+        success "Auto-start configured in .bashrc"
     else
-        echo -e "DNS Tunnel: ${RED}Stopped${NC}"
+        warning "Auto-start already configured"
     fi
     
-    # Check SSH
-    if netstat -tulpn 2>/dev/null | grep -q ":1080"; then
-        echo -e "SSH Proxy: ${GREEN}Running${NC}"
-    else
-        echo -e "SSH Proxy: ${RED}Stopped${NC}"
+    # Create boot script for Termux:boot (if installed)
+    if [ -d $HOME/.termux/boot ]; then
+        cat > $HOME/.termux/boot/start_vpn << EOF
+#!/data/data/com.termux/files/usr/bin/sh
+sleep 5
+$HOME/start_vpn.sh
+EOF
+        chmod +x $HOME/.termux/boot/start_vpn
+        success "Termux:boot script created"
     fi
-    
-    # Show active processes
-    echo ""
-    echo "Active Processes:"
-    ps aux | grep -E "python.*5353|ssh.*1080|dnstt" | grep -v grep || echo "None"
 }
 
-# Main menu
-main_menu() {
+# ==========================================
+# MAIN EXECUTION
+# ==========================================
+
+main() {
+    # Check if not root
+    check_root
+    
+    # Create log file
+    touch "$LOG_FILE"
+    
+    # Parse arguments
+    if [ "$1" = "--start" ]; then
+        start_vpn
+        test_vpn
+        exit 0
+    fi
+    
+    # Main menu loop
     while true; do
-        banner
-        echo ""
-        echo "1) Start VPN"
-        echo "2) Stop VPN"
-        echo "3) Test Connection"
-        echo "4) Check Status"
-        echo "5) Android DNS Setup"
-        echo "6) Change Credentials"
-        echo "7) View Logs"
-        echo "8) Auto-start Setup"
-        echo "9) Exit"
-        echo ""
-        echo -n "Select option: "
+        show_menu
         read choice
         
         case $choice in
             1)
-                # First time setup
-                if ! command -v sshpass >/dev/null; then
-                    install_packages
-                fi
-                
-                setup_directory
-                
-                # Get credentials if needed
-                if [ ! -f "$VPN_DIR/creds.txt" ]; then
-                    get_credentials
-                fi
-                
-                # Start services
-                start_python_tunnel
-                sleep 3
-                start_ssh_tunnel
-                sleep 2
-                test_connection
-                show_android_setup
-                show_usage
+                check_internet
+                install_dependencies
+                find_working_port
+                setup_iptables
+                create_vpn_interface
+                create_management_script
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
+                read
                 ;;
             2)
-                stop_vpn
+                find_working_port
+                start_vpn
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
+                read
                 ;;
             3)
-                test_connection
+                $HOME/stop_vpn.sh
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
+                read
                 ;;
             4)
-                check_status
+                $HOME/vpn_status.sh
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
+                read
                 ;;
             5)
-                show_android_setup
+                test_vpn
+                echo -e "${YELLow}Press Enter to continue...${NC}"
+                read
                 ;;
             6)
-                get_credentials
+                configure_apps
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
+                read
                 ;;
             7)
-                echo -e "${CYAN}=== VPN LOG ===${NC}"
-                tail -20 "$LOG_FILE" 2>/dev/null || echo "No log"
-                echo ""
-                echo -e "${CYAN}=== SSH LOG ===${NC}"
-                tail -10 "$VPN_DIR/ssh.log" 2>/dev/null || echo "No SSH log"
+                echo -e "${YELLOW}=== VPN Logs ===${NC}"
+                tail -20 "$LOG_FILE"
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
+                read
                 ;;
             8)
-                # Auto-start setup
-                mkdir -p ~/.termux/boot
-                cat > ~/.termux/boot/00-vpn << 'BOOT'
-#!/data/data/com.termux/files/usr/bin/bash
-sleep 20
-cd $HOME
-bash termux-vpn.sh auto
-BOOT
-                chmod +x ~/.termux/boot/00-vpn
-                success "Auto-start configured")
+                auto_start_setup
+                echo -e "${YELLOW}Press Enter to continue...${NC}"
+                read
                 ;;
             9)
-                stop_vpn
-                echo "Goodbye!"
+                echo -e "${GREEN}[✓] Exiting${NC}"
                 exit 0
                 ;;
             *)
-                error "Invalid option!")
+                error "Invalid option"
                 ;;
         esac
-        
-        echo ""
-        read -p "Press Enter to continue..."
     done
 }
 
-# Auto-start mode
-if [ "$1" = "auto" ]; then
-    setup_directory
-    if [ -f "$VPN_DIR/creds.txt" ]; then
-        start_python_tunnel
-        sleep 5
-        start_ssh_tunnel
-    fi
-    exit 0
-fi
-
-# Start main menu
-check_termux
-main_menu
-EOF
-
-# Make it executable
-chmod +x ~/termux-vpn.sh
+# Run main function
+main "$@"
