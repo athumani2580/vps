@@ -1,667 +1,354 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-# ==========================================
-# TERMUX SLOWDNS VPN SETUP
-# ==========================================
 # Configuration
 SERVER_IP="139.84.240.171"
-RESOLVER_IP="169.255.187.58"
-NS_DOMAIN="gerry.alienalien.top"
+DNS_RESOLVER="169.255.187.58"
+DNS_PORT="53"
+NS_SERVER="gerry.alienalien.top"
 PUBLIC_KEY="7fbd1f8aa0abfe15a7903e837f78aba39cf61d36f183bd604daa2fe4ef3b7b59"
-
-# Ports to try (443 is most common for SlowDNS)
-PORTS=(443 53 80 5300 8443 2053 2083 2087 8880 5353)
+PROXY_HOST="127.0.0.1"
+PROXY_PORT="8080"
+SOCKS_HOST="127.0.0.1"
+SOCKS_PORT="9050"
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Log file
-LOG_FILE="$HOME/slowdns_vpn.log"
+echo -e "${BLUE}Termux VPN Setup with DNS Resolver${NC}"
+echo "======================================"
 
-# ==========================================
-# FUNCTIONS
-# ==========================================
-
-log() {
-    echo -e "${BLUE}[$(date '+%H:%M:%S')]${NC} $1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
-}
-
-success() {
-    echo -e "${GREEN}[✓]${NC} $1"
-    echo "[✓] $1" >> "$LOG_FILE"
-}
-
-error() {
-    echo -e "${RED}[✗]${NC} $1"
-    echo "[✗] $1" >> "$LOG_FILE"
-}
-
-warning() {
-    echo -e "${YELLOW}[!]${NC} $1"
-    echo "[!] $1" >> "$LOG_FILE"
-}
-
-check_root() {
-    if [ "$(whoami)" = "root" ]; then
-        error "Do not run as root! Termux doesn't need root."
-        exit 1
-    fi
-}
-
-check_internet() {
-    log "Checking internet connection..."
-    if ping -c 1 8.8.8.8 &>/dev/null; then
-        success "Internet connection OK"
-        return 0
-    else
-        error "No internet connection"
-        return 1
-    fi
-}
-
+# Install required packages
 install_dependencies() {
-    log "Installing dependencies..."
+    echo -e "${YELLOW}Installing dependencies...${NC}"
+    pkg update -y
+    pkg install -y python3 python3-pip tor proxychains-ng curl wget dnsutils ndc rinetd
     
-    # Update packages
-    pkg update -y && pkg upgrade -y
+    # Install DNS tools
+    pip3 install dnspython socks pysocks
     
-    # Install required packages
-    pkg install -y python git curl wget socat nano proot termux-api \
-                   nmap dnsutils iproute2 net-tools openssl \
-                   python-pip rustc
-    
-    # Install Python packages
-    pip install requests socks pycryptodome cryptography
-    
-    success "Dependencies installed"
+    echo -e "${GREEN}Dependencies installed!${NC}"
 }
 
-find_working_port() {
-    log "Finding working port on server..."
+# Setup DNS resolver properly
+setup_dns_resolver() {
+    echo -e "${YELLOW}Setting up DNS resolver: $DNS_RESOLVER:$DNS_PORT${NC}"
     
-    for port in "${PORTS[@]}"; do
-        echo -ne "${YELLOW}  Testing port $port...${NC}"
-        timeout 2 bash -c "echo > /dev/tcp/$SERVER_IP/$port" 2>/dev/null
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN} OPEN${NC}"
-            WORKING_PORT=$port
-            success "Found working port: $port"
-            return 0
-        else
-            echo -e "${RED} CLOSED${NC}"
-        fi
-    done
-    
-    error "No open ports found on server"
-    return 1
-}
-
-setup_iptables() {
-    log "Setting up iptables for VPN routing..."
-    
-    # Enable routing
-    su -c "echo 1 > /proc/sys/net/ipv4/ip_forward" 2>/dev/null
-    
-    # Create NAT rules (requires root, but we try anyway)
-    # These commands might not work without root, but we include them for completeness
-    warning "Some iptables commands require root. Skipping if failed..."
-    
-    # Try to set up basic routing
-    su -c "iptables -t nat -A POSTROUTING -o tun0 -j MASQUERADE 2>/dev/null" || true
-    su -c "iptables -A FORWARD -i tun0 -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null" || true
-    su -c "iptables -A FORWARD -i eth0 -o tun0 -j ACCEPT 2>/dev/null" || true
-}
-
-create_vpn_interface() {
-    log "Creating VPN network interface..."
-    
-    # Create tun interface
-    if [ ! -c /dev/net/tun ]; then
-        su -c "mkdir -p /dev/net && mknod /dev/net/tun c 10 200" 2>/dev/null || true
+    # Method 1: Using ndc (if available)
+    if command -v ndc &> /dev/null; then
+        echo -e "${BLUE}Setting DNS via ndc...${NC}"
+        ndc resolver setnetdns "" $DNS_RESOLVER 1.1.1.1
     fi
     
-    # Try to bring up tun0
-    su -c "ip tuntap add dev tun0 mode tun 2>/dev/null" || true
-    su -c "ip addr add 10.8.0.2/24 dev tun0 2>/dev/null" || true
-    su -c "ip link set tun0 up 2>/dev/null" || true
-}
-
-start_dns_forwarder() {
-    log "Starting DNS forwarder..."
+    # Method 2: Create custom resolv.conf
+    cat > $PREFIX/etc/resolv.conf << EOF
+# Custom DNS Resolver Configuration
+nameserver $DNS_RESOLVER
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+options timeout:2 attempts:3 rotate
+EOF
     
-    # Kill any existing DNS forwarders
-    pkill -f "socat.*53" 2>/dev/null
-    pkill -f "dns-forwarder" 2>/dev/null
+    # Method 3: Set via setprop (Android properties)
+    echo -e "${BLUE}Setting DNS via Android properties...${NC}"
+    setprop net.dns1 $DNS_RESOLVER
+    setprop net.dns2 "1.1.1.1"
     
-    # Start DNS forwarder (local port 53 -> server)
-    # Try port 53 first, fallback to 5353 if permission denied
-    if socat UDP4-LISTEN:53,reuseaddr,fork UDP4:$SERVER_IP:$WORKING_PORT 2>/dev/null &
-    then
-        DNS_PID=$!
-        success "DNS forwarder started on port 53 (PID: $DNS_PID)"
-    else
-        warning "Port 53 failed, trying port 5353..."
-        socat UDP4-LISTEN:5353,reuseaddr,fork UDP4:$SERVER_IP:$WORKING_PORT &
-        DNS_PID=$!
-        success "DNS forwarder started on port 5353 (PID: $DNS_PID)"
-    fi
-    
-    # Also start TCP DNS for apps that need it
-    socat TCP4-LISTEN:5353,reuseaddr,fork TCP4:$SERVER_IP:$WORKING_PORT &
-    DNS_TCP_PID=$!
-    
-    echo $DNS_PID > /tmp/dns_pid
-    echo $DNS_TCP_PID > /tmp/dns_tcp_pid
-}
-
-set_dns_settings() {
-    log "Configuring DNS settings..."
-    
-    # Set DNS to localhost
-    setprop net.dns1 127.0.0.1 2>/dev/null || true
-    setprop net.dns2 127.0.0.1 2>/dev/null || true
-    
-    # Also update resolv.conf
-    echo "nameserver 127.0.0.1" > $PREFIX/etc/resolv.conf
-    echo "nameserver 8.8.8.8" >> $PREFIX/etc/resolv.conf
-    echo "nameserver 1.1.1.1" >> $PREFIX/etc/resolv.conf
-    
-    success "DNS set to 127.0.0.1"
-}
-
-create_vpn_tunnel() {
-    log "Creating VPN tunnel using SlowDNS..."
-    
-    # Create Python VPN client
-    cat > $HOME/vpn_tunnel.py << EOF
+    # Create DNS forwarding script
+    cat > $HOME/dns-forwarder.py << 'EOF'
 #!/data/data/com.termux/files/usr/bin/python3
-
 import socket
-import threading
-import time
 import sys
-import os
+import struct
 
-SERVER_IP = "$SERVER_IP"
-SERVER_PORT = $WORKING_PORT
-DNS_RESOLVER = "$RESOLVER_IP"
-PUBLIC_KEY = "$PUBLIC_KEY"
+DNS_RESOLVER = "169.255.187.58"
+DNS_PORT = 53
+LOCAL_PORT = 5353
 
-class VPNTunnel:
-    def __init__(self):
-        self.running = True
-        
-    def create_tunnel(self):
-        """Create a VPN-like tunnel using DNS tunneling"""
-        print("[*] Creating VPN tunnel...")
-        print(f"[*] Server: {SERVER_IP}:{SERVER_PORT}")
-        print(f"[*] Using DNS: {DNS_RESOLVER}")
-        
-        # This simulates a VPN by routing all traffic through DNS
-        while self.running:
-            try:
-                # Create UDP socket for VPN
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.settimeout(10)
-                
-                # Connect to server
-                sock.connect((SERVER_IP, SERVER_PORT))
-                
-                print("[✓] Connected to VPN server")
-                
-                # Keep connection alive
-                while self.running:
-                    try:
-                        # Send keepalive
-                        sock.send(b"KEEPALIVE")
-                        data = sock.recv(1024)
-                        
-                        if not data:
-                            print("[!] Connection lost, reconnecting...")
-                            break
-                            
-                        time.sleep(5)
-                        
-                    except Exception as e:
-                        print(f"[!] Error: {e}")
-                        break
-                        
-                sock.close()
-                
-            except Exception as e:
-                print(f"[!] Connection failed: {e}")
-                time.sleep(5)
-                print("[*] Reconnecting...")
-
-def main():
-    vpn = VPNTunnel()
-    try:
-        vpn.create_tunnel()
-    except KeyboardInterrupt:
-        print("\n[!] Stopping VPN...")
-        vpn.running = False
-        sys.exit(0)
+def forward_dns():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(('127.0.0.1', LOCAL_PORT))
+    
+    print(f"DNS Forwarder running on 127.0.0.1:{LOCAL_PORT}")
+    print(f"Forwarding to {DNS_RESOLVER}:{DNS_PORT}")
+    
+    while True:
+        try:
+            data, addr = sock.recvfrom(1024)
+            # Forward to resolver
+            resolver_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            resolver_sock.sendto(data, (DNS_RESOLVER, DNS_PORT))
+            response, _ = resolver_sock.recvfrom(1024)
+            # Send back to client
+            sock.sendto(response, addr)
+            resolver_sock.close()
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(f"Error: {e}")
 
 if __name__ == "__main__":
-    main()
+    forward_dns()
 EOF
     
-    # Make executable and start VPN tunnel
-    chmod +x $HOME/vpn_tunnel.py
-    python3 $HOME/vpn_tunnel.py &
-    VPN_PID=$!
-    echo $VPN_PID > /tmp/vpn_pid
-    
-    success "VPN tunnel started (PID: $VPN_PID)"
+    chmod +x $HOME/dns-forwarder.py
+    echo -e "${GREEN}DNS forwarder script created: ~/dns-forwarder.py${NC}"
+    echo -e "${YELLOW}Run: python3 ~/dns-forwarder.py${NC}"
 }
 
-setup_proxy() {
-    log "Setting up HTTP/SOCKS5 proxy..."
+# Setup proxy server (rinetd port forwarding)
+setup_proxy_forwarding() {
+    echo -e "${YELLOW}Setting up proxy forwarding...${NC}"
     
-    # Create SOCKS5 proxy
-    cat > $HOME/start_proxy.sh << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-
-# Start SOCKS5 proxy on port 9050
-echo "[*] Starting SOCKS5 proxy on 127.0.0.1:9050"
-ssh -N -D 9050 -o "ProxyCommand=nc -x 127.0.0.1:1080 %h %p" user@$SERVER_IP -p 22 &
-
-# Start HTTP proxy on port 8080
-echo "[*] Starting HTTP proxy on 127.0.0.1:8080"
-python3 -m http.server 8080 --bind 127.0.0.1 &
+    # Create rinetd config for HTTP proxy
+    cat > $PREFIX/etc/rinetd.conf << EOF
+# Redirect local port 8080 to server proxy
+0.0.0.0 8080 $SERVER_IP 8080
+0.0.0.0 1080 $SERVER_IP 1080
 EOF
     
-    chmod +x $HOME/start_proxy.sh
+    # Start rinetd
+    pkill rinetd 2>/dev/null
+    rinetd -c $PREFIX/etc/rinetd.conf
     
-    # Try to start proxy (may fail if no SSH, that's OK)
-    $HOME/start_proxy.sh &
-    PROXY_PID=$!
-    echo $PROXY_PID > /tmp/proxy_pid
-    
-    success "Proxy servers started (PID: $PROXY_PID)"
+    echo -e "${GREEN}Proxy forwarding configured!${NC}"
+    echo -e "Local HTTP Proxy: $PROXY_HOST:$PROXY_PORT -> $SERVER_IP:8080"
 }
 
-configure_apps() {
-    log "Configuring apps to use VPN..."
+# Start Tor SOCKS5 proxy
+start_tor_socks() {
+    echo -e "${YELLOW}Starting Tor SOCKS5 proxy...${NC}"
     
-    # Create app configuration script
-    cat > $HOME/configure_apps.sh << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-
-echo "=========================================="
-echo "    VPN CONFIGURATION FOR APPS"
-echo "=========================================="
-echo
-echo "To use VPN in apps:"
-echo
-echo "1. Browser (Termux Firefox):"
-echo "   - Install: pkg install firefox"
-echo "   - Settings → Network Settings → Manual proxy"
-echo "   - SOCKS Host: 127.0.0.1"
-echo "   - Port: 9050"
-echo "   - SOCKS v5"
-echo
-echo "2. curl/wget commands:"
-echo "   export http_proxy='socks5://127.0.0.1:9050'"
-echo "   export https_proxy='socks5://127.0.0.1:9050'"
-echo
-echo "3. Git:"
-echo "   git config --global http.proxy socks5://127.0.0.1:9050"
-echo
-echo "4. All apps (global):"
-echo "   Add to ~/.bashrc:"
-echo "   export HTTP_PROXY='socks5://127.0.0.1:9050'"
-echo "   export HTTPS_PROXY='socks5://127.0.0.1:9050'"
-echo "   export ALL_PROXY='socks5://127.0.0.1:9050'"
-echo
-echo "=========================================="
+    # Create minimal torrc
+    cat > $PREFIX/etc/tor/torrc << EOF
+SocksPort $SOCKS_HOST:$SOCKS_PORT
+SocksPolicy accept 127.0.0.1/32
+SocksPolicy reject *
+Log notice stdout
+DataDirectory $PREFIX/var/lib/tor
+RunAsDaemon 1
 EOF
     
-    chmod +x $HOME/configure_apps.sh
-    $HOME/configure_apps.sh
+    # Start Tor
+    pkill tor 2>/dev/null
+    tor -f $PREFIX/etc/tor/torrc
     
-    # Set environment variables
-    echo "export HTTP_PROXY='socks5://127.0.0.1:9050'" >> $HOME/.bashrc
-    echo "export HTTPS_PROXY='socks5://127.0.0.1:9050'" >> $HOME/.bashrc
-    echo "export ALL_PROXY='socks5://127.0.0.1:9050'" >> $HOME/.bashrc
+    sleep 3
     
-    success "App configuration complete"
-}
-
-test_vpn() {
-    log "Testing VPN connection..."
-    
-    echo -e "${YELLOW}1. Testing DNS resolution:${NC}"
-    if nslookup google.com 127.0.0.1 2>/dev/null | grep -q "Address"; then
-        success "DNS working"
+    if pgrep tor > /dev/null; then
+        echo -e "${GREEN}Tor SOCKS5 proxy running on $SOCKS_HOST:$SOCKS_PORT${NC}"
     else
-        # Try port 5353 as fallback
-        if dig @127.0.0.1 -p 5353 google.com +short 2>/dev/null | grep -q "."; then
-            success "DNS working on port 5353"
-        else
-            error "DNS failed"
-        fi
+        echo -e "${RED}Failed to start Tor${NC}"
     fi
-    
-    echo -e "${YELLOW}2. Testing connection through VPN:${NC}"
-    
-    # Get original IP
-    OLD_IP=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || echo "Unknown")
-    echo "Original IP: $OLD_IP"
-    
-    # Test if DNS is actually routing
-    echo -e "${YELLOW}3. Testing DNS routing:${NC}"
-    DNS_TEST=$(dig +short google.com @127.0.0.1 2>/dev/null | head -1)
-    if [ -n "$DNS_TEST" ]; then
-        success "DNS routing working ($DNS_TEST)"
-        
-        # Try to get new IP via dig (more reliable)
-        NEW_IP=$(dig +short myip.opendns.com @resolver1.opendns.com 2>/dev/null || echo "Unknown")
-        echo "Current IP via DNS: $NEW_IP"
-        
-        if [ "$NEW_IP" != "$OLD_IP" ] && [ "$NEW_IP" != "Unknown" ]; then
-            success "VPN is working! IP changed"
-        else
-            warning "IP not changed. Testing direct connection..."
-        fi
-    else
-        error "DNS not routing traffic"
-    fi
-    
-    echo -e "${YELLOW}4. Testing speed:${NC}"
-    timeout 10 curl -o /dev/null -w "Download: %{speed_download} bytes/sec\n" \
-         http://ipv4.download.thinkbroadband.com/1MB.zip 2>/dev/null || echo "Speed test failed"
 }
 
-create_management_script() {
-    log "Creating management scripts..."
+# Configure proxychains with multiple options
+setup_proxychains_config() {
+    echo -e "${YELLOW}Configuring proxychains...${NC}"
     
-    # Start script
-    cat > $HOME/start_vpn.sh << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-cd $HOME
-./termux_vpn.sh --start
-EOF
-    
-    # Stop script
-    cat > $HOME/stop_vpn.sh << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-echo "[*] Stopping VPN..."
-pkill -f "socat.*53" 2>/dev/null
-pkill -f "socat.*5353" 2>/dev/null
-pkill -f "vpn_tunnel.py" 2>/dev/null
-pkill -f "start_proxy.sh" 2>/dev/null
-setprop net.dns1 8.8.8.8 2>/dev/null
-echo "[✓] VPN stopped"
-EOF
-    
-    # Status script
-    cat > $HOME/vpn_status.sh << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-echo "=== VPN Status ==="
-echo "DNS Process: \$(ps aux | grep -E 'socat.*(53|5353)' | grep -v grep | wc -l) running"
-echo "VPN Tunnel: \$(ps aux | grep vpn_tunnel.py | grep -v grep | wc -l) running"
-echo "Proxy: \$(ps aux | grep start_proxy.sh | grep -v grep | wc -l) running"
-echo "Current DNS: \$(getprop net.dns1 2>/dev/null || echo 'Not set')"
-echo "Current IP: \$(curl -s https://api.ipify.org 2>/dev/null || echo 'Unknown')"
-echo "Test DNS: dig google.com @127.0.0.1 +short"
-EOF
+    cat > $PREFIX/etc/proxychains.conf << EOF
+# Proxychains config with multiple proxy options
+dynamic_chain
+proxy_dns
+remote_dns_subnet 224
+tcp_read_time_out 15000
+tcp_connect_time_out 8000
 
-    # Auto-install all script
-    cat > $HOME/install_all.sh << EOF
-#!/data/data/com.termux/files/usr/bin/bash
-echo "=========================================="
-echo "    INSTALLING EVERYTHING AT ONCE"
-echo "=========================================="
-cd \$HOME
-./termux_vpn.sh --install-all
+[ProxyList]
+# Choose one of the following configurations:
+
+# Option 1: Use SOCKS5 (Tor)
+socks5 $SOCKS_HOST $SOCKS_PORT
+
+# Option 2: Use HTTP proxy (comment out if not used)
+#http $PROXY_HOST $PROXY_PORT
+
+# Option 3: Direct to your server via SOCKS
+#socks5 $SERVER_IP 1080
+
+# Option 4: Chain proxies (uncomment to use)
+#socks5 $SOCKS_HOST $SOCKS_PORT
+#http $PROXY_HOST $PROXY_PORT
 EOF
     
-    # Make executable
-    chmod +x $HOME/start_vpn.sh
-    chmod +x $HOME/stop_vpn.sh
-    chmod +x $HOME/vpn_status.sh
-    chmod +x $HOME/install_all.sh
-    
-    success "Management scripts created"
+    echo -e "${GREEN}Proxychains configured!${NC}"
+    echo -e "${YELLOW}Edit $PREFIX/etc/proxychains.conf to choose proxy method${NC}"
 }
 
-start_vpn() {
-    log "Starting VPN..."
+# Create universal proxy script
+create_universal_proxy() {
+    cat > $HOME/proxy-wrapper.sh << 'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+
+# Universal proxy wrapper script
+# Usage: proxy-wrapper.sh <command>
+
+PROXY_TYPE="${1:-socks5}"
+HOST="${2:-127.0.0.1}"
+PORT="${3:-9050}"
+COMMAND="${4:-$SHELL}"
+
+case $PROXY_TYPE in
+    "http"|"https")
+        export HTTP_PROXY="http://$HOST:$PORT"
+        export HTTPS_PROXY="http://$HOST:$PORT"
+        export http_proxy="http://$HOST:$PORT"
+        export https_proxy="http://$HOST:$PORT"
+        ;;
+    "socks"|"socks5")
+        export SOCKS_PROXY="socks5://$HOST:$PORT"
+        export ALL_PROXY="socks5://$HOST:$PORT"
+        export socks_proxy="socks5://$HOST:$PORT"
+        export all_proxy="socks5://$HOST:$PORT"
+        ;;
+    "both")
+        export HTTP_PROXY="http://$HOST:8080"
+        export HTTPS_PROXY="http://$HOST:8080"
+        export SOCKS_PROXY="socks5://$HOST:9050"
+        export ALL_PROXY="socks5://$HOST:9050"
+        ;;
+    *)
+        echo "Usage: $0 [http|socks|both] [host] [port] [command]"
+        exit 1
+        ;;
+esac
+
+echo "Proxy settings applied: $PROXY_TYPE://$HOST:$PORT"
+echo "Running: $COMMAND"
+exec $COMMAND
+EOF
     
-    # Step-by-step startup
-    start_dns_forwarder
-    sleep 2
-    
-    set_dns_settings
-    sleep 2
-    
-    create_vpn_tunnel
-    sleep 2
-    
-    setup_proxy
-    sleep 2
-    
-    configure_apps
-    
-    success "VPN started successfully!"
+    chmod +x $HOME/proxy-wrapper.sh
+    echo -e "${GREEN}Universal proxy wrapper created: ~/proxy-wrapper.sh${NC}"
 }
 
-# ==========================================
-# NEW: INSTALL ALL FUNCTION
-# ==========================================
+# Test all configurations
+test_all_configs() {
+    echo -e "${YELLOW}Testing configurations...${NC}"
+    
+    echo -e "\n${BLUE}1. Testing DNS resolver...${NC}"
+    nslookup google.com $DNS_RESOLVER
+    
+    echo -e "\n${BLUE}2. Testing direct connection...${NC}"
+    curl -s --connect-timeout 5 http://ipinfo.io/ip || echo "Direct connection failed"
+    
+    echo -e "\n${BLUE}3. Testing HTTP proxy...${NC}"
+    curl -s --proxy http://$PROXY_HOST:$PROXY_PORT --connect-timeout 5 http://ipinfo.io/ip && echo "✓ HTTP proxy working" || echo "✗ HTTP proxy failed"
+    
+    echo -e "\n${BLUE}4. Testing SOCKS5 proxy...${NC}"
+    curl -s --socks5 $SOCKS_HOST:$SOCKS_PORT --connect-timeout 5 http://ipinfo.io/ip && echo "✓ SOCKS5 proxy working" || echo "✗ SOCKS5 proxy failed"
+    
+    echo -e "\n${BLUE}5. Testing proxychains...${NC}"
+    timeout 10 proxychains curl -s http://ipinfo.io/ip && echo "✓ Proxychains working" || echo "✗ Proxychains failed"
+    
+    echo -e "\n${BLUE}6. Testing with custom DNS...${NC}"
+    dig @$DNS_RESOLVER google.com +short
+}
 
-install_all() {
-    echo -e "${CYAN}"
-    echo "=========================================="
-    echo "    INSTALLING EVERYTHING AT ONCE"
-    echo "=========================================="
-    echo -e "${NC}"
+# Create application-specific scripts
+create_app_scripts() {
+    # For wget
+    cat > $HOME/.wgetrc << EOF
+use_proxy = on
+http_proxy = http://$PROXY_HOST:$PROXY_PORT
+https_proxy = http://$PROXY_HOST:$PROXY_PORT
+EOF
     
-    log "Starting complete installation..."
+    # For git
+    cat > $HOME/.gitconfig-proxy << EOF
+[http]
+    proxy = http://$PROXY_HOST:$PROXY_PORT
+[https]
+    proxy = http://$PROXY_HOST:$PROXY_PORT
+EOF
     
-    # 1. Check internet
-    if ! check_internet; then
-        error "No internet connection. Aborting."
-        return 1
-    fi
+    # For apt (if using proot-distro)
+    cat > $HOME/apt-proxy.sh << EOF
+#!/bin/bash
+echo "Acquire::http::Proxy \"http://$PROXY_HOST:$PROXY_PORT\";" | sudo tee /etc/apt/apt.conf.d/proxy.conf
+echo "Acquire::https::Proxy \"http://$PROXY_HOST:$PROXY_PORT\";" | sudo tee -a /etc/apt/apt.conf.d/proxy.conf
+EOF
     
-    # 2. Install dependencies
+    chmod +x $HOME/apt-proxy.sh
+    
+    echo -e "${GREEN}Application proxy configs created!${NC}"
+}
+
+# Main installation
+full_installation() {
+    echo -e "${BLUE}Starting full VPN setup...${NC}"
+    
     install_dependencies
+    setup_dns_resolver
+    setup_proxy_forwarding
+    start_tor_socks
+    setup_proxychains_config
+    create_universal_proxy
+    create_app_scripts
     
-    # 3. Find working port
-    if ! find_working_port; then
-        error "Could not find working port. Aborting."
-        return 1
-    fi
-    
-    # 4. Setup network
-    setup_iptables
-    create_vpn_interface
-    
-    # 5. Create management scripts
-    create_management_script
-    
-    # 6. Start VPN
-    start_vpn
-    
-    # 7. Test VPN
-    test_vpn
-    
-    # 8. Setup auto-start
-    auto_start_setup
-    
-    echo -e "${GREEN}"
-    echo "=========================================="
-    echo "    INSTALLATION COMPLETE!"
-    echo "=========================================="
-    echo -e "${NC}"
-    echo "What to do next:"
-    echo "1. Check VPN status: ./vpn_status.sh"
-    echo "2. Stop VPN: ./stop_vpn.sh"
-    echo "3. Start VPN again: ./start_vpn.sh"
-    echo "4. Test VPN: ./termux_vpn.sh (then choose option 5)"
-    echo ""
-    echo "VPN will auto-start when you open Termux"
-    echo "=========================================="
+    echo -e "\n${GREEN}=== Setup Complete! ===${NC}"
+    echo -e "Available proxies:"
+    echo -e "  HTTP:  $PROXY_HOST:$PROXY_PORT"
+    echo -e "  SOCKS5: $SOCKS_HOST:$SOCKS_PORT"
+    echo -e "\nCommands:"
+    echo -e "  Test DNS: nslookup google.com $DNS_RESOLVER"
+    echo -e "  Test HTTP: curl --proxy http://$PROXY_HOST:$PROXY_PORT http://ipinfo.io/ip"
+    echo -e "  Test SOCKS: curl --socks5 $SOCKS_HOST:$SOCKS_PORT http://ipinfo.io/ip"
+    echo -e "  Use proxychains: proxychains <command>"
+    echo -e "  Use wrapper: ~/proxy-wrapper.sh http/socks <command>"
 }
 
-show_menu() {
-    clear
-    echo -e "${CYAN}"
-    echo "=========================================="
-    echo "    TERMUX SLOWDNS VPN"
-    echo "=========================================="
-    echo -e "${NC}"
-    echo -e "${YELLOW}Server:${NC} $SERVER_IP"
-    echo -e "${YELLOW}DNS:${NC} $RESOLVER_IP"
-    echo -e "${YELLOW}Domain:${NC} $NS_DOMAIN"
-    echo "=========================================="
-    echo
-    echo "1. Install & Setup VPN"
-    echo "2. Start VPN"
-    echo "3. Stop VPN"
-    echo "4. Check VPN Status"
-    echo "5. Test VPN Connection"
-    echo "6. Configure Apps"
-    echo "7. View Logs"
-    echo "8. Auto-start on Boot"
-    echo "9. INSTALL ALL (Recommended)"
-    echo "0. Exit"
-    echo
-    echo -n "Select option [0-9]: "
-}
-
-auto_start_setup() {
-    log "Setting up auto-start on Termux launch..."
-    
-    # Add to .bashrc
-    if ! grep -q "start_vpn.sh" $HOME/.bashrc; then
-        echo "" >> $HOME/.bashrc
-        echo "# Auto-start VPN" >> $HOME/.bashrc
-        echo "if [ -f ~/start_vpn.sh ]; then" >> $HOME/.bashrc
-        echo "    sleep 2" >> $HOME/.bashrc
-        echo "    ~/start_vpn.sh &" >> $HOME/.bashrc
-        echo "fi" >> $HOME/.bashrc
-        success "Auto-start configured in .bashrc"
-    else
-        warning "Auto-start already configured"
-    fi
-    
-    # Create boot script for Termux:boot (if installed)
-    if [ -d $HOME/.termux/boot ]; then
-        cat > $HOME/.termux/boot/start_vpn << EOF
-#!/data/data/com.termux/files/usr/bin/sh
-sleep 5
-$HOME/start_vpn.sh
-EOF
-        chmod +x $HOME/.termux/boot/start_vpn
-        success "Termux:boot script created"
-    fi
-}
-
-# ==========================================
-# MAIN EXECUTION
-# ==========================================
-
-main() {
-    # Check if not root
-    check_root
-    
-    # Create log file
-    touch "$LOG_FILE"
-    
-    # Parse arguments
-    case "$1" in
-        "--start")
-            start_vpn
-            test_vpn
-            exit 0
-            ;;
-        "--install-all")
-            install_all
-            exit 0
-            ;;
-        "--test")
-            test_vpn
-            exit 0
-            ;;
-    esac
-    
-    # Main menu loop
+# Interactive menu
+interactive_menu() {
     while true; do
-        show_menu
-        read choice
+        echo -e "\n${BLUE}=== VPN Setup Menu ===${NC}"
+        echo "1. Full Installation"
+        echo "2. Setup DNS Resolver Only"
+        echo "3. Start SOCKS5 Proxy (Tor)"
+        echo "4. Configure Proxychains"
+        echo "5. Test All Configurations"
+        echo "6. Create Proxy Wrapper"
+        echo "7. Set Environment Variables"
+        echo "8. Start DNS Forwarder"
+        echo "9. Stop All Services"
+        echo "0. Exit"
+        
+        read -p "Select option: " choice
         
         case $choice in
-            1)
-                check_internet
-                install_dependencies
-                find_working_port
-                setup_iptables
-                create_vpn_interface
-                create_management_script
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            2)
-                find_working_port
-                start_vpn
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            3)
-                $HOME/stop_vpn.sh
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            4)
-                $HOME/vpn_status.sh
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            5)
-                test_vpn
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            6)
-                configure_apps
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            7)
-                echo -e "${YELLOW}=== VPN Logs ===${NC}"
-                tail -20 "$LOG_FILE"
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            8)
-                auto_start_setup
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
+            1) full_installation ;;
+            2) setup_dns_resolver ;;
+            3) start_tor_socks ;;
+            4) setup_proxychains_config ;;
+            5) test_all_configs ;;
+            6) create_universal_proxy ;;
+            7) 
+                export HTTP_PROXY="http://$PROXY_HOST:$PROXY_PORT"
+                export HTTPS_PROXY="http://$PROXY_HOST:$PROXY_PORT"
+                export ALL_PROXY="socks5://$SOCKS_HOST:$SOCKS_PORT"
+                echo "Environment variables set!"
+            ;;
+            8) python3 $HOME/dns-forwarder.py & ;;
             9)
-                install_all
-                echo -e "${YELLOW}Press Enter to continue...${NC}"
-                read
-                ;;
-            0)
-                echo -e "${GREEN}[✓] Exiting${NC}"
-                exit 0
-                ;;
-            *)
-                error "Invalid option"
-                ;;
+                pkill tor
+                pkill rinetd
+                pkill -f dns-forwarder.py
+                echo "All services stopped"
+            ;;
+            0) exit 0 ;;
+            *) echo "Invalid option" ;;
         esac
     done
 }
 
-# Run main function
-main "$@"
+# Check if running in Termux
+if [ ! -d "/data/data/com.termux" ]; then
+    echo -e "${RED}This script must be run in Termux!${NC}"
+    exit 1
+fi
+
+# Start interactive menu
+interactive_menu
