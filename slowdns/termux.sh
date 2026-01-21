@@ -8,9 +8,9 @@
 # Public Key: 7fbd1f8aa0abfe15a7903e837f78aba39cf61d36f183bd604daa2fe4ef3b7b59
 # =============================================
 
-# Configuration
+# Configuration - FIXED PORT: 22 not 2222!
 SERVER_IP="139.84.240.171"
-SSH_PORT="2222"
+SSH_PORT="22"  # CHANGED THIS LINE FROM 2222 TO 22
 DNS_SERVER="169.255.187.58"
 DNS_PORT="53"
 NAMESERVER="gerry.alienalien.top"
@@ -174,8 +174,10 @@ setup_ssh_tunnel() {
     # Kill existing SSH tunnel
     pkill -f "ssh.*$LOCAL_PORT" 2>/dev/null
     
-    # Start SSH SOCKS proxy
+    # Start SSH SOCKS proxy - FIXED PORT 22
     print_info "Starting SSH SOCKS5 proxy on port $LOCAL_PORT..."
+    echo "Connecting to: $SERVER_IP:$SSH_PORT"
+    
     ssh -f -N -D "$LOCAL_PORT" -p "$SSH_PORT" \
         -o StrictHostKeyChecking=no \
         -o ServerAliveInterval=60 \
@@ -189,7 +191,15 @@ setup_ssh_tunnel() {
         return 0
     else
         print_error "Failed to start SSH tunnel"
-        return 1
+        
+        # Try manual method
+        echo ""
+        print_info "Trying manual connection method..."
+        echo "You'll need to enter password when prompted"
+        echo "or press Ctrl+C if you don't know it"
+        echo ""
+        ssh -D "$LOCAL_PORT" -p "$SSH_PORT" root@"$SERVER_IP"
+        return $?
     fi
 }
 
@@ -275,6 +285,7 @@ start_vpn() {
     fi
     
     print_step "Starting SlowDNS VPN..."
+    print_info "Using SSH Port: $SSH_PORT"
     
     # 1. Start SSH tunnel
     if setup_ssh_tunnel; then
@@ -314,6 +325,11 @@ start_vpn() {
         tail -f "$LOG_FILE"
     else
         print_error "Failed to start VPN"
+        echo ""
+        echo "Possible solutions:"
+        echo "1. Make sure server is running: ssh -p $SSH_PORT root@$SERVER_IP"
+        echo "2. Check if you have correct password"
+        echo "3. Server might be down or IP blocked"
         exit 1
     fi
 }
