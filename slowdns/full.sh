@@ -152,22 +152,12 @@ fi
 # Create SlowDNS service with MTU 1800
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
-[Unit]
-Description=Server SlowDNS ALIEN
-Documentation=https://man himself
-After=network.target nss-lookup.target
-Wants=sshd.service
-
 [Service]
 Type=simple
-User=root
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
+ExecStart=$SLOWDNS_BINARY -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
 Restart=always
-RestartSec=3
-StartLimitInterval=0
+RestartSec=5
+User=root
 
 [Install]
 WantedBy=multi-user.target
