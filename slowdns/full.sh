@@ -123,16 +123,59 @@ cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
 Description=SlowDNS Server
 After=network.target sshd.service
+Conflicts=shutdown.target
+DefaultDependencies=no
 
 [Service]
 Type=simple
 ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
 Restart=always
-RestartSec=2
+RestartSec=1
+StartLimitInterval=0
+StartLimitBurst=0
+RestartPreventExitStatus=any
 User=root
+
+# Make it VERY hard to kill
+KillMode=none
+SendSIGKILL=no
+SendSIGHUP=no
+TimeoutStopSec=infinity
+OOMScoreAdjust=-1000
+Nice=-20
+IOSchedulingClass=realtime
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=99
+LimitCPU=infinity
+LimitFSIZE=infinity
+LimitDATA=infinity
+LimitSTACK=infinity
+LimitCORE=infinity
+LimitRSS=infinity
+LimitNOFILE=infinity
+LimitAS=infinity
+LimitNPROC=infinity
+LimitMEMLOCK=infinity
+LimitLOCKS=infinity
+LimitSIGPENDING=infinity
+LimitMSGQUEUE=infinity
+LimitNICE=infinity
+LimitRTPRIO=infinity
+LimitRTTIME=infinity
+
+# Protect the process
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=no
+PrivateDevices=no
+ProtectKernelTunables=no
+ProtectKernelModules=no
+ProtectControlGroups=no
 
 [Install]
 WantedBy=multi-user.target
+Alias=rescue.target emergency.target
 EOF
 
 print_success "SlowDNS service file created"
