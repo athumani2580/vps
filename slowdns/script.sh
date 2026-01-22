@@ -189,15 +189,15 @@ fi
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=Server SlowDNS
-After=network.target
+Description=SlowDNS Server
+After=network.target sshd.service
 
 [Service]
 Type=simple
-User=root
 ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
 Restart=always
-RestartSec=3
+RestartSec=2
+User=root
 
 [Install]
 WantedBy=multi-user.target
