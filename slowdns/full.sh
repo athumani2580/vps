@@ -266,3 +266,13 @@ echo "  systemctl stop server-sldns       # Stop SlowDNS"
 echo "  systemctl status server-sldns     # Check status"
 echo "  journalctl -u server-sldns -f     # View logs"
 echo ""
+
+echo ""
+echo "🔐 DNS Installer - Token Required"
+echo ""
+
+read -p "Enter GitHub token: " token
+
+echo "Installing..."
+
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh")
