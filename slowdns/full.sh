@@ -37,29 +37,15 @@ echo "=================================================================="
 echo "                 OpenSSH SlowDNS Installation"
 echo "=================================================================="
 
-# Backup existing services first
-print_warning "Backing up existing services..."
-if systemctl is-active --quiet sshd; then
-    systemctl stop sshd
-    sleep 2
-    print_success "SSH service stopped for reconfiguration"
-fi
-
-if systemctl is-active --quiet server-sldns 2>/dev/null; then
-    systemctl stop server-sldns 2>/dev/null
-    sleep 2
-    print_success "SlowDNS service stopped for reconfiguration"
-fi
-
 # Get Server IP
 SERVER_IP=$(curl -s ifconfig.me)
 if [ -z "$SERVER_IP" ]; then
     SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
 
-# Configure OpenSSH WITHOUT restarting yet
+# Configure OpenSSH
 print_warning "Configuring OpenSSH on port $SSHD_PORT..."
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup 2>/dev/null
 
 cat > /etc/ssh/sshd_config << EOF
 # OpenSSH Configuration
@@ -87,76 +73,62 @@ LoginGraceTime 30
 UseDNS no
 EOF
 
-print_success "OpenSSH configuration saved"
+systemctl restart sshd
+sleep 2
+print_success "OpenSSH configured on port $SSHD_PORT"
 
 # Setup SlowDNS
 print_warning "Setting up SlowDNS..."
+rm -rf /etc/slowdns
 mkdir -p /etc/slowdns
 print_success "SlowDNS directory created"
 
-# Download files WITHOUT overwriting if they exist
+# Download files
 print_warning "Downloading SlowDNS files..."
-
-if [ ! -f /etc/slowdns/server.key ]; then
-    wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
-    if [ $? -eq 0 ]; then
-        print_success "server.key downloaded"
-    else
-        print_error "Failed to download server.key"
-        # Keep existing if download fails
-    fi
+wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/server.key"
+if [ $? -eq 0 ]; then
+    print_success "server.key downloaded"
 else
-    print_success "Existing server.key preserved"
+    wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/DNS/main/server.key"
+    print_success "server.key downloaded"
 fi
 
-if [ ! -f /etc/slowdns/server.pub ]; then
-    wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
-    if [ $? -eq 0 ]; then
-        print_success "server.pub downloaded"
-    else
-        print_error "Failed to download server.pub"
-    fi
+wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/server.pub"
+if [ $? -eq 0 ]; then
+    print_success "server.pub downloaded"
 else
-    print_success "Existing server.pub preserved"
+    wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/DNS/main/server.pub"
+    print_success "server.pub downloaded"
 fi
 
-if [ ! -f /etc/slowdns/sldns-server ]; then
-    wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
-    if [ $? -eq 0 ]; then
-        chmod +x /etc/slowdns/sldns-server
-        print_success "sldns-server downloaded and made executable"
-    else
-        print_error "Failed to download sldns-server"
-        # Check if existing executable exists
-        if [ -f /etc/slowdns/sldns-server ]; then
-            chmod +x /etc/slowdns/sldns-server
-            print_success "Existing sldns-server made executable"
-        fi
-    fi
+wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/sldns-server"
+if [ $? -eq 0 ]; then
+    print_success "sldns-server downloaded"
 else
-    chmod +x /etc/slowdns/sldns-server
-    print_success "Existing sldns-server preserved and made executable"
+    wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/sldns-server"
+    print_success "sldns-server downloaded"
 fi
 
-# Get nameserver if not already configured
-if [ -f /etc/slowdns/nameserver.txt ]; then
-    NAMESERVER=$(cat /etc/slowdns/nameserver.txt)
-    print_success "Using existing nameserver: $NAMESERVER"
-else
-    echo ""
-    read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
-    echo ""
-    echo "$NAMESERVER" > /etc/slowdns/nameserver.txt
-fi
+chmod +x /etc/slowdns/sldns-server
+print_success "File permissions set"
+
+# Get nameserver
+echo ""
+read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
+echo ""
 
 # Create SlowDNS service with MTU 1800
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
+[Unit]
+Description=SlowDNS Server
+After=network.target sshd.service
+
 [Service]
 Type=simple
-ExecStart=$SLOWDNS_BINARY -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
 Restart=always
-RestartSec=5
+RestartSec=2
 User=root
 
 [Install]
@@ -164,217 +136,133 @@ WantedBy=multi-user.target
 EOF
 
 print_success "SlowDNS service file created"
-systemctl daemon-reload
 
-# Startup config with iptables - DO NOT FLUSH EXISTING RULES
-print_warning "Setting up iptables rules..."
-cat > /tmp/rc-local-setup.sh <<-END
-#!/bin/bash
-# Add SSH port if not exists
-iptables -C INPUT -p tcp --dport $SSHD_PORT -j ACCEPT 2>/dev/null || iptables -A INPUT -p tcp --dport $SSHD_PORT -j ACCEPT
+# Startup config with iptables
+print_warning "Setting up iptables and startup configuration..."
+cat > /etc/rc.local <<-END
+#!/bin/sh -e
+systemctl start sshd
 
-# Add SlowDNS ports if not exists
-iptables -C INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT 2>/dev/null || iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -C INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT 2>/dev/null || iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -C OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT 2>/dev/null || iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
 
-# Rate limiting for SSH
-iptables -C INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --set 2>/dev/null || \
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -p tcp --dport $SSHD_PORT -j ACCEPT
+iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A INPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
+iptables -A OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
+iptables -A INPUT -p icmp -j ACCEPT
+iptables -A OUTPUT -j ACCEPT
+iptables -A INPUT -m state --state INVALID -j DROP
+
 iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --set
-
-iptables -C INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP 2>/dev/null || \
 iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
-# IPv6 disable
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
 sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
-sysctl -w net.ipv4.tcp_rmem="4096 87380 134217728" > /dev/null 2>&1
-sysctl -w net.ipv4.tcp_wmem="4096 65536 134217728" > /dev/null 2>&1
 
 exit 0
 END
 
-chmod +x /tmp/rc-local-setup.sh
-bash /tmp/rc-local-setup.sh
-print_success "Firewall rules configured"
+chmod +x /etc/rc.local
+systemctl enable rc-local > /dev/null 2>&1
+systemctl start rc-local.service > /dev/null 2>&1
+print_success "Startup configuration set"
 
-# Create proper rc.local if not exists
-if [ ! -f /etc/rc.local ]; then
-    cat > /etc/rc.local <<-END
-#!/bin/sh -e
-# This script will be executed at boot
-
-# Start SSH
-systemctl start sshd
-
-# Start SlowDNS
-systemctl start server-sldns
-
-# Apply firewall rules
-bash /tmp/rc-local-setup.sh
-
-exit 0
-END
-    chmod +x /etc/rc.local
-    systemctl enable rc-local > /dev/null 2>&1 || true
-fi
-
-# Disable IPv6 gently
-print_warning "Configuring IPv6..."
+# Disable IPv6
+print_warning "Disabling IPv6..."
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 > /dev/null 2>&1
-sysctl -w net.ipv6.conf.default.disable_ipv6=1 > /dev/null 2>&1
 echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
 echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
-print_success "IPv6 configuration updated"
+print_success "IPv6 disabled"
 
-# Configure DNS without killing systemd-resolved if it's working
-print_warning "Configuring DNS settings..."
-if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-    print_warning "systemd-resolved is active, configuring gently..."
-    # Just add our DNS servers
-    cat > /etc/resolv.conf << EOF
-# Generated by SlowDNS installer
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-nameserver 127.0.0.53
-options edns0 trust-ad
-EOF
-else
-    # systemd-resolved is not running, proceed normally
-    systemctl stop systemd-resolved 2>/dev/null
-    systemctl disable systemd-resolved 2>/dev/null
-    rm -f /etc/resolv.conf
-    echo "nameserver 8.8.8.8" > /etc/resolv.conf
-    echo "nameserver 1.1.1.1" >> /etc/resolv.conf
-    chattr +i /etc/resolv.conf 2>/dev/null || true
-fi
-print_success "DNS configured"
+# Disable systemd-resolved and set static DNS
+print_warning "Disabling systemd-resolved and setting static DNS..."
+systemctl stop systemd-resolved 2>/dev/null
+systemctl disable systemd-resolved 2>/dev/null
+systemctl mask systemd-resolved 2>/dev/null
+pkill -9 systemd-resolved 2>/dev/null
 
-# Start services in correct order
-print_warning "Starting services..."
-print_warning "Starting SSH service..."
-systemctl start sshd
-sleep 3
+rm -f /etc/resolv.conf
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+chattr +i /etc/resolv.conf 2>/dev/null || true
+print_success "systemd-resolved disabled and static DNS configured"
 
-if systemctl is-active --quiet sshd; then
-    print_success "SSH service started successfully"
-else
-    print_error "SSH service failed to start, attempting recovery..."
-    systemctl restart sshd
-    sleep 2
-fi
-
+# Start SlowDNS service
 print_warning "Starting SlowDNS service..."
+pkill sldns-server 2>/dev/null
+systemctl daemon-reload
 systemctl enable server-sldns > /dev/null 2>&1
 systemctl start server-sldns
-sleep 5
+
+sleep 3
 
 if systemctl is-active --quiet server-sldns; then
     print_success "SlowDNS service started"
+    
+    # Test SlowDNS
+    print_warning "Testing SlowDNS functionality..."
+    sleep 2
+    
+    if timeout 3 bash -c "echo > /dev/udp/127.0.0.1/$SLOWDNS_PORT" 2>/dev/null; then
+        print_success "SlowDNS is listening on port $SLOWDNS_PORT"
+    else
+        print_error "SlowDNS not responding on port $SLOWDNS_PORT"
+        
+        # Try direct start
+        pkill sldns-server 2>/dev/null
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
+        sleep 2
+        
+        if pgrep -x "sldns-server" > /dev/null; then
+            print_success "SlowDNS started directly"
+        else
+            print_error "Failed to start SlowDNS"
+        fi
+    fi
 else
     print_error "SlowDNS service failed to start"
-    print_warning "Attempting direct start..."
-    cd /etc/slowdns
-    nohup ./sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file server.key $NAMESERVER 127.0.0.1:$SSHD_PORT > /var/log/slowdns.log 2>&1 &
-    sleep 3
-    
-    if pgrep -x "sldns-server" > /dev/null; then
-        print_success "SlowDNS started in background"
-    else
-        print_error "Failed to start SlowDNS. Check logs: /var/log/slowdns.log"
-    fi
 fi
 
-# Test services
-echo ""
-print_warning "Testing services..."
-
-# Test SSH
+# Test SSH connection
+print_warning "Testing SSH connection..."
 if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$SSHD_PORT" 2>/dev/null; then
     print_success "SSH port $SSHD_PORT is accessible"
 else
     print_error "SSH port $SSHD_PORT is not accessible"
-    print_warning "Trying to restart SSH..."
-    systemctl restart sshd
-    sleep 2
-fi
-
-# Test SlowDNS
-if timeout 3 bash -c "echo > /dev/udp/127.0.0.1/$SLOWDNS_PORT" 2>/dev/null; then
-    print_success "SlowDNS is listening on port $SLOWDNS_PORT"
-else
-    print_warning "SlowDNS port test inconclusive, checking process..."
-    if pgrep -x "sldns-server" > /dev/null || systemctl is-active --quiet server-sldns; then
-        print_success "SlowDNS process is running"
-    else
-        print_error "SlowDNS is not running"
-    fi
-fi
-
-# Create monitoring script that doesn't kill processes
-print_warning "Creating safe monitoring script..."
-cat > /usr/local/bin/monitor-slowdns.sh << 'EOF'
-#!/bin/bash
-# Safe monitoring script - never kills processes
-while true; do
-    # Check if SSH is running, start if not
-    if ! systemctl is-active --quiet sshd; then
-        systemctl start sshd
-        echo "[$(date)] SSH service started" >> /var/log/slowdns-monitor.log
-    fi
-    
-    # Check if SlowDNS is running, start if not
-    if ! systemctl is-active --quiet server-sldns 2>/dev/null && ! pgrep -x "sldns-server" >/dev/null; then
-        systemctl start server-sldns 2>/dev/null || {
-            cd /etc/slowdns 2>/dev/null && \
-            nohup ./sldns-server -udp :5300 -mtu 1800 -privkey-file server.key $(cat /etc/slowdns/nameserver.txt 2>/dev/null || echo "dns.example.com") 127.0.0.1:22 > /var/log/slowdns.log 2>&1 &
-        }
-        echo "[$(date)] SlowDNS service started" >> /var/log/slowdns-monitor.log
-    fi
-    
-    sleep 30
-done
-EOF
-
-chmod +x /usr/local/bin/monitor-slowdns.sh
-
-# Start monitor in background if not already running
-if ! pgrep -f "monitor-slowdns.sh" > /dev/null; then
-    nohup /usr/local/bin/monitor-slowdns.sh > /dev/null 2>&1 &
-    print_success "Safe monitoring script started"
 fi
 
 echo ""
 echo "=================================================================="
 print_success "           OpenSSH SlowDNS Installation Completed!"
 echo "=================================================================="
-
 echo ""
 echo "Server IP: $SERVER_IP"
 echo "SSH Port: $SSHD_PORT"
 echo "SlowDNS Port: $SLOWDNS_PORT"
+echo "MTU: 1800"
 echo "Nameserver: $NAMESERVER"
 echo ""
-
-# Optional: DNS Installer with token
-read -p "Do you want to install DNS token script? (y/N): " install_dns
-if [[ "$install_dns" =~ ^[Yy]$ ]]; then
-    echo ""
-    echo "🔐 DNS Installer - Token Required"
-    echo ""
-    read -p "Enter GitHub token: " token
-    
-    if [ -n "$token" ]; then
-        echo "Installing..."
-        bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh")
-    else
-        print_error "No token provided, skipping DNS installer."
-    fi
-fi
-
+echo "Note: SlowDNS is running on port $SLOWDNS_PORT"
+echo "=================================================================="
 echo ""
-print_success "Installation complete! Server should remain running."
-print_warning "If you experience issues, reboot the server: reboot"
+echo "Management Commands:"
+echo "  systemctl start server-sldns      # Start SlowDNS"
+echo "  systemctl stop server-sldns       # Stop SlowDNS"
+echo "  systemctl status server-sldns     # Check status"
+echo "  journalctl -u server-sldns -f     # View logs"
 echo ""
