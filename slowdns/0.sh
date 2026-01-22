@@ -9,6 +9,7 @@ NC='\033[0m'
 # SSH Port Configuration
 SSHD_PORT=22
 SLOWDNS_PORT=5300
+MTU_SIZE=1232  # Added MTU configuration
 
 # Functions
 print_success() {
@@ -89,21 +90,24 @@ wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani25
 if [ $? -eq 0 ]; then
     print_success "server.key downloaded"
 else
-    print_error "Failed to download server.key"
+    wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/server.key"
+    print_success "server.key downloaded"
 fi
 
 wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
 if [ $? -eq 0 ]; then
     print_success "server.pub downloaded"
 else
-    print_error "Failed to download server.pub"
+    wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/server.pub"
+    print_success "server.pub downloaded"
 fi
 
 wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
 if [ $? -eq 0 ]; then
     print_success "sldns-server downloaded"
 else
-    print_error "Failed to download sldns-server"
+    wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
+    print_success "sldns-server downloaded"
 fi
 
 chmod +x /etc/slowdns/sldns-server
@@ -114,22 +118,19 @@ echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
-# Create SlowDNS service with MTU 1800
-print_warning "Creating SlowDNS service..."
+# Create SlowDNS service with MTU 1232
+print_warning "Creating SlowDNS service with MTU $MTU_SIZE..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=Server SlowDNS ALIEN
-Documentation=https://man himself
-After=network.target nss-lookup.target
+Description=SlowDNS Server
+After=network.target sshd.service
 
 [Service]
 Type=simple
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
+Restart=always
+RestartSec=2
 User=root
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
-Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
@@ -137,11 +138,38 @@ EOF
 
 print_success "SlowDNS service file created"
 
-# Startup config with iptables
-print_warning "Setting up iptables and startup configuration..."
+# Configure MTU 1232 on network interfaces
+print_warning "Configuring MTU $MTU_SIZE on network interfaces..."
+INTERFACES=$(ls /sys/class/net | grep -v lo)
+
+for iface in $INTERFACES; do
+    if ip link set dev $iface mtu $MTU_SIZE 2>/dev/null; then
+        print_success "MTU $MTU_SIZE set on interface $iface"
+        
+        # Make MTU setting persistent
+        if [ -f "/etc/network/interfaces.d/$iface.cfg" ]; then
+            sed -i "/mtu/d" "/etc/network/interfaces.d/$iface.cfg"
+            echo "    mtu $MTU_SIZE" >> "/etc/network/interfaces.d/$iface.cfg"
+        elif [ -f "/etc/netplan/"* ]; then
+            # For netplan systems
+            find /etc/netplan -name "*.yaml" -exec sed -i "s/mtu:.*/mtu: $MTU_SIZE/" {} \;
+        fi
+    else
+        print_warning "Could not set MTU on interface $iface"
+    fi
+done
+
+# Add MTU configuration to rc.local
+print_warning "Adding MTU configuration to startup..."
 cat > /etc/rc.local <<-END
 #!/bin/sh -e
 systemctl start sshd
+
+# Set MTU on interfaces
+INTERFACES=\$(ls /sys/class/net | grep -v lo)
+for iface in \$INTERFACES; do
+    ip link set dev \$iface mtu $MTU_SIZE 2>/dev/null || true
+done
 
 iptables -F
 iptables -X
@@ -172,13 +200,17 @@ echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
 sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
 
+# MTU optimization for SlowDNS
+sysctl -w net.ipv4.tcp_mtu_probing=1 > /dev/null 2>&1
+sysctl -w net.ipv4.route.mtu_expires=600 > /dev/null 2>&1
+
 exit 0
 END
 
 chmod +x /etc/rc.local
 systemctl enable rc-local > /dev/null 2>&1
 systemctl start rc-local.service > /dev/null 2>&1
-print_success "Startup configuration set"
+print_success "Startup configuration with MTU $MTU_SIZE set"
 
 # Disable IPv6
 print_warning "Disabling IPv6..."
@@ -189,17 +221,18 @@ echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
 print_success "IPv6 disabled"
 
-# Disable systemd-resolved and set custom DNS
-print_warning "Configuring DNS settings..."
+# Disable systemd-resolved and set static DNS
+print_warning "Disabling systemd-resolved and setting static DNS..."
 systemctl stop systemd-resolved 2>/dev/null
 systemctl disable systemd-resolved 2>/dev/null
 systemctl mask systemd-resolved 2>/dev/null
 pkill -9 systemd-resolved 2>/dev/null
+
 rm -f /etc/resolv.conf
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
-print_success "DNS configured with Google and Cloudflare DNS servers"
+print_success "systemd-resolved disabled and static DNS configured"
 
 # Start SlowDNS service
 print_warning "Starting SlowDNS service..."
@@ -224,7 +257,7 @@ if systemctl is-active --quiet server-sldns; then
         
         # Try direct start
         pkill sldns-server 2>/dev/null
-        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
         sleep 2
         
         if pgrep -x "sldns-server" > /dev/null; then
@@ -245,10 +278,38 @@ else
     print_error "SSH port $SSHD_PORT is not accessible"
 fi
 
+# Verify MTU settings
+print_warning "Verifying MTU settings..."
+for iface in $INTERFACES; do
+    CURRENT_MTU=$(cat /sys/class/net/$iface/mtu 2>/dev/null || echo "unknown")
+    if [ "$CURRENT_MTU" = "$MTU_SIZE" ]; then
+        print_success "Interface $iface has MTU $MTU_SIZE"
+    else
+        print_warning "Interface $iface has MTU $CURRENT_MTU (expected $MTU_SIZE)"
+    fi
+done
+
 echo ""
 echo "=================================================================="
 print_success "           OpenSSH SlowDNS Installation Completed!"
 echo "=================================================================="
+echo ""
+echo "Server IP: $SERVER_IP"
+echo "SSH Port: $SSHD_PORT"
+echo "SlowDNS Port: $SLOWDNS_PORT"
+echo "MTU: $MTU_SIZE"
+echo "Nameserver: $NAMESERVER"
+echo ""
+echo "Note: SlowDNS is running on port $SLOWDNS_PORT with MTU $MTU_SIZE"
+echo "=================================================================="
+echo ""
+echo "Management Commands:"
+echo "  systemctl start server-sldns      # Start SlowDNS"
+echo "  systemctl stop server-sldns       # Stop SlowDNS"
+echo "  systemctl status server-sldns     # Check status"
+echo "  journalctl -u server-sldns -f     # View logs"
+echo "  ip link show                      # Check MTU settings"
+echo ""
 
 echo ""
 echo "🔐 DNS Installer - Token Required"
@@ -258,4 +319,4 @@ read -p "Enter GitHub token: " token
 
 echo "Installing..."
 
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/go.sh")
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
