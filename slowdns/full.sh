@@ -122,7 +122,7 @@ print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
 Description=SlowDNS Server
-After=network.target sshd.service
+After=network.target
 
 [Service]
 Type=simple
