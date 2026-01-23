@@ -1,226 +1,56 @@
 #!/bin/bash
 
 # ==============================================
-# OpenSSH + SlowDNS Installation Script
-# Ubuntu/Debian Fixed Version
+# Simple OpenSSH + SlowDNS Installer for Ubuntu
 # ==============================================
 
-set -e  # Exit on any error
-
-# ==============================================
-# CONFIGURATION
-# ==============================================
-CONFIG_FILE="/etc/ssh_slowdns.conf"
-LOG_FILE="/var/log/ssh_slowdns_install.log"
-BACKUP_DIR="/etc/backup_ssh_slowdns"
-
-# Default Values
-DEFAULT_SSH_PORT=22
-DEFAULT_DNS_PORT=5300
-DEFAULT_MTU=1800
-DEFAULT_NAMESERVER="dns.example.com"
-DEFAULT_DNS1="8.8.8.8"
-DEFAULT_DNS2="1.1.1.1"
-
-# ==============================================
-# COLOR DEFINITIONS
-# ==============================================
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
 NC='\033[0m'
-BOLD='\033[1m'
-DIM='\033[2m'
 
-# ==============================================
-# LOGGING FUNCTIONS
-# ==============================================
-log_message() {
-    echo -e "$1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $2" >> "$LOG_FILE"
-}
+# Configuration
+SSH_PORT=22
+DNS_PORT=5300
+NAMESERVER=""
+SERVER_IP=""
 
-log_success() {
-    log_message "${GREEN}[✓]${NC} $1" "SUCCESS: $1"
-}
+# Log functions
+log_success() { echo -e "${GREEN}[✓]${NC} $1"; }
+log_error() { echo -e "${RED}[✗]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
+log_info() { echo -e "${BLUE}[i]${NC} $1"; }
 
-log_error() {
-    log_message "${RED}[✗]${NC} $1" "ERROR: $1"
-}
-
-log_warning() {
-    log_message "${YELLOW}[!]${NC} $1" "WARNING: $1"
-}
-
-log_info() {
-    log_message "${BLUE}[i]${NC} $1" "INFO: $1"
-}
-
-# ==============================================
-# VALIDATION FUNCTIONS
-# ==============================================
+# Check if running as root
 check_root() {
     if [ "$EUID" -ne 0 ]; then
-        log_error "This script must be run as root. Use: sudo bash $0"
+        log_error "Please run as root: sudo bash $0"
         exit 1
     fi
 }
 
-validate_port() {
-    local port=$1
-    local name=$2
-    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-        log_error "Invalid $name port: $port. Must be 1-65535"
-        exit 1
-    fi
+# Get server IP
+get_ip() {
+    SERVER_IP=$(curl -s ifconfig.me || curl -s icanhazip.com || hostname -I | awk '{print $1}')
+    echo "Detected IP: $SERVER_IP"
 }
 
-# ==============================================
-# UBUNTU/DEBIAN SPECIFIC FUNCTIONS
-# ==============================================
-configure_ubuntu_dns() {
-    log_info "Configuring DNS for Ubuntu..."
-    
-    # Check if systemd-resolved is running
-    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        log_warning "systemd-resolved is active. Configuring it instead of replacing..."
-        
-        # Create or update resolved.conf
-        mkdir -p /etc/systemd/resolved.conf.d/
-        cat > /etc/systemd/resolved.conf.d/99-static-dns.conf << EOF
-[Resolve]
-DNS=$DEFAULT_DNS1 $DEFAULT_DNS2
-FallbackDNS=8.8.4.4 9.9.9.9
-Domains=~.
-DNSSEC=allow-downgrade
-DNSOverTLS=opportunistic
-Cache=yes
-DNSStubListener=no
-EOF
-        
-        # Disable DNSStubListener to free port 53
-        sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf 2>/dev/null || true
-        
-        # Restart systemd-resolved
-        systemctl restart systemd-resolved
-        sleep 2
-        
-        # Check if resolv.conf is a symlink
-        if [ -L /etc/resolv.conf ]; then
-            # It's a symlink to /run/systemd/resolve/stub-resolv.conf
-            # Update the target instead
-            log_info "resolv.conf is a symlink to systemd-resolved"
-            log_info "DNS configured via systemd-resolved"
-        else
-            # Create static resolv.conf
-            cat > /etc/resolv.conf << EOF
-# Static DNS - Managed by SSH+SlowDNS installer
-nameserver $DEFAULT_DNS1
-nameserver $DEFAULT_DNS2
-options timeout:2 attempts:2
-EOF
-        fi
-    else
-        # systemd-resolved is not active, use static resolv.conf
-        log_info "Creating static resolv.conf..."
-        
-        # Remove symlink if exists
-        if [ -L /etc/resolv.conf ]; then
-            rm -f /etc/resolv.conf
-        fi
-        
-        # Remove immutable attribute if set
-        chattr -i /etc/resolv.conf 2>/dev/null || true
-        
-        # Create static resolv.conf
-        cat > /etc/resolv.conf << EOF
-# Static DNS - Managed by SSH+SlowDNS installer
-nameserver $DEFAULT_DNS1
-nameserver $DEFAULT_DNS2
-options timeout:2 attempts:2
-EOF
-        
-        # Make it immutable to prevent changes
-        chattr +i /etc/resolv.conf 2>/dev/null && log_info "resolv.conf made immutable" || log_warning "Could not make resolv.conf immutable"
-    fi
-    
-    log_success "DNS configured for Ubuntu"
+# Install dependencies
+install_deps() {
+    log_info "Updating system and installing dependencies..."
+    apt-get update
+    apt-get install -y curl wget iptables iptables-persistent net-tools openssh-server
+    log_success "Dependencies installed"
 }
 
-configure_ubuntu_ssh() {
-    local ssh_port=$1
-    
-    log_info "Configuring SSH for Ubuntu..."
-    
-    # Backup original config
-    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
-    
-    # Create minimal SSH config
-    cat > /etc/ssh/sshd_config << EOF
-# SSH Configuration for SlowDNS
-Port $ssh_port
-Protocol 2
-PermitRootLogin yes
-PubkeyAuthentication yes
-PasswordAuthentication yes
-PermitEmptyPasswords no
-ChallengeResponseAuthentication no
-UsePAM yes
-X11Forwarding no
-PrintMotd no
-PrintLastLog yes
-TCPKeepAlive yes
-ClientAliveInterval 60
-ClientAliveCountMax 3
-AllowTcpForwarding yes
-GatewayPorts yes
-Compression delayed
-Subsystem sftp /usr/lib/openssh/sftp-server
-MaxSessions 100
-MaxStartups 100:30:200
-LoginGraceTime 30
-UseDNS no
-EOF
-    
-    # Test and restart SSH
-    if sshd -t; then
-        # On Ubuntu, SSH service is usually called 'ssh' not 'sshd'
-        systemctl restart ssh
-        systemctl enable ssh
-        
-        sleep 2
-        
-        if ss -tlnp | grep -q ":$ssh_port "; then
-            log_success "SSH configured on port $ssh_port"
-            return 0
-        else
-            log_error "SSH failed to start"
-            return 1
-        fi
-    else
-        log_error "SSH configuration test failed"
-        return 1
-    fi
-}
-
-configure_ubuntu_firewall() {
-    local ssh_port=$1
-    local dns_port=$2
-    
-    log_info "Configuring firewall for Ubuntu..."
-    
-    # Install iptables-persistent non-interactively
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y iptables-persistent
+# Configure firewall
+setup_firewall() {
+    log_info "Configuring firewall..."
     
     # Flush existing rules
     iptables -F
     iptables -X
-    iptables -t nat -F
-    iptables -t nat -X
     
     # Set default policies
     iptables -P INPUT DROP
@@ -235,71 +65,96 @@ configure_ubuntu_firewall() {
     iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
     
     # Allow SSH
-    iptables -A INPUT -p tcp --dport $ssh_port -m state --state NEW -j ACCEPT
+    iptables -A INPUT -p tcp --dport $SSH_PORT -j ACCEPT
     
     # Allow SlowDNS
-    iptables -A INPUT -p udp --dport $dns_port -j ACCEPT
-    iptables -A INPUT -p tcp --dport $dns_port -j ACCEPT
+    iptables -A INPUT -p udp --dport $DNS_PORT -j ACCEPT
+    iptables -A INPUT -p tcp --dport $DNS_PORT -j ACCEPT
     
     # Allow ICMP (ping)
     iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
     
     # Save rules
+    mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
-    
-    # Save IPv6 rules (disable IPv6 traffic)
-    ip6tables -P INPUT DROP
-    ip6tables -P FORWARD DROP
-    ip6tables -P OUTPUT DROP
-    ip6tables-save > /etc/iptables/rules.v6
     
     log_success "Firewall configured"
 }
 
-configure_ubuntu_ipv6() {
-    log_info "Disabling IPv6 for Ubuntu..."
+# Disable IPv6
+disable_ipv6() {
+    log_info "Disabling IPv6..."
     
-    # Disable IPv6 temporarily
+    # Temporary disable
     sysctl -w net.ipv6.conf.all.disable_ipv6=1
     sysctl -w net.ipv6.conf.default.disable_ipv6=1
-    sysctl -w net.ipv6.conf.lo.disable_ipv6=1
     
-    # Make persistent
-    cat > /etc/sysctl.d/99-disable-ipv6.conf << EOF
-# Disable IPv6
+    # Permanent disable
+    cat >> /etc/sysctl.conf << EOF
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
     
-    sysctl -p /etc/sysctl.d/99-disable-ipv6.conf
-    
+    sysctl -p
     log_success "IPv6 disabled"
 }
 
-# ==============================================
-# SLOWDNS FUNCTIONS
-# ==============================================
+# Configure SSH
+setup_ssh() {
+    log_info "Configuring SSH..."
+    
+    # Backup original config
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
+    
+    # Create new config
+    cat > /etc/ssh/sshd_config << EOF
+Port $SSH_PORT
+Protocol 2
+PermitRootLogin yes
+PubkeyAuthentication yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+UsePAM yes
+X11Forwarding no
+PrintMotd no
+TCPKeepAlive yes
+ClientAliveInterval 60
+ClientAliveCountMax 3
+AllowTcpForwarding yes
+GatewayPorts yes
+Compression delayed
+UseDNS no
+Subsystem sftp /usr/lib/openssh/sftp-server
+EOF
+    
+    # Restart SSH
+    systemctl restart ssh
+    log_success "SSH configured on port $SSH_PORT"
+}
+
+# Download SlowDNS files
 download_slowdns() {
     log_info "Downloading SlowDNS files..."
     
     # Create directory
+    rm -rf /etc/slowdns
     mkdir -p /etc/slowdns
     cd /etc/slowdns
     
     # Download files with retry
     for file in server.key server.pub sldns-server; do
-        for url in \
-            "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/$file" \
-            "https://raw.githubusercontent.com/athumani2580/vps/main/$file"; do
-            
-            if wget -q --timeout=10 -O "$file" "$url"; then
-                log_success "Downloaded $file"
-                break
-            fi
-        done
+        log_info "Downloading $file..."
         
-        if [ ! -f "$file" ]; then
+        # Try multiple sources
+        if ! wget -q --timeout=30 --tries=3 -O $file "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/$file"; then
+            log_warning "Failed first source, trying alternative..."
+            wget -q --timeout=30 --tries=3 -O $file "https://raw.githubusercontent.com/athumani2580/vps/main/$file"
+        fi
+        
+        if [ -f $file ]; then
+            log_success "Downloaded $file"
+        else
             log_error "Failed to download $file"
             return 1
         fi
@@ -307,336 +162,253 @@ download_slowdns() {
     
     # Make binary executable
     chmod +x sldns-server
-    
     log_success "SlowDNS files downloaded"
 }
 
-configure_slowdns_service() {
-    local dns_port=$1
-    local ssh_port=$2
-    local nameserver=$3
+# Create startup script (simpler than systemd)
+create_startup_script() {
+    log_info "Creating startup script..."
     
-    log_info "Configuring SlowDNS service..."
-    
-    # Stop any existing instance
+    # Kill any existing slowdns process
     pkill -f sldns-server 2>/dev/null || true
-    systemctl stop slowdns 2>/dev/null || true
     
-    # Create service file
+    # Create simple startup script
+    cat > /etc/slowdns/start.sh << EOF
+#!/bin/bash
+cd /etc/slowdns
+./sldns-server -udp :$DNS_PORT -privkey-file server.key $NAMESERVER 127.0.0.1:$SSH_PORT
+EOF
+    
+    chmod +x /etc/slowdns/start.sh
+    
+    # Create systemd service the safe way
     cat > /etc/systemd/system/slowdns.service << EOF
 [Unit]
 Description=SlowDNS Server
 After=network.target
-Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/etc/slowdns
-ExecStart=/etc/slowdns/sldns-server -udp :$dns_port -privkey-file /etc/slowdns/server.key $nameserver 127.0.0.1:$ssh_port
+ExecStart=/etc/slowdns/sldns-server -udp :$DNS_PORT -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSH_PORT
 Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
 SyslogIdentifier=slowdns
 
 [Install]
 WantedBy=multi-user.target
 EOF
     
-    # Enable and start service
+    # Enable and start
     systemctl daemon-reload
     systemctl enable slowdns.service
-    systemctl start slowdns.service
+    sleep 2
     
+    log_success "Startup script created"
+}
+
+# Test SlowDNS
+test_slowdns() {
+    log_info "Testing SlowDNS..."
+    
+    # Start service
+    systemctl start slowdns.service
     sleep 3
     
-    if systemctl is-active --quiet slowdns.service; then
-        log_success "SlowDNS service started"
+    # Check if running
+    if pgrep -x "sldns-server" > /dev/null; then
+        log_success "SlowDNS is running"
         
-        # Test connection
-        if timeout 2 bash -c "echo > /dev/udp/127.0.0.1/$dns_port" 2>/dev/null; then
-            log_success "SlowDNS listening on port $dns_port"
+        # Test port
+        if timeout 2 nc -z -u 127.0.0.1 $DNS_PORT 2>/dev/null; then
+            log_success "SlowDNS listening on UDP port $DNS_PORT"
         else
-            log_warning "SlowDNS port test failed (service is running)"
+            log_warning "SlowDNS running but port test failed"
         fi
     else
-        log_error "Failed to start SlowDNS service"
-        journalctl -u slowdns.service --no-pager -n 20
-        return 1
+        log_error "SlowDNS failed to start"
+        
+        # Try direct start for debugging
+        log_info "Trying direct start..."
+        cd /etc/slowdns
+        nohup ./sldns-server -udp :$DNS_PORT -privkey-file server.key $NAMESERVER 127.0.0.1:$SSH_PORT > /var/log/slowdns.log 2>&1 &
+        sleep 2
+        
+        if pgrep -x "sldns-server" > /dev/null; then
+            log_success "SlowDNS started directly"
+        else
+            log_error "Check /var/log/slowdns.log for errors"
+            return 1
+        fi
     fi
 }
 
-# ==============================================
-# MAIN INSTALLATION
-# ==============================================
-install_ssh_slowdns() {
-    clear
+# Optimize system
+optimize_system() {
+    log_info "Optimizing system..."
     
-    echo -e "${CYAN}"
-    echo "========================================================"
-    echo "           OpenSSH + SlowDNS Installer"
-    echo "               Ubuntu/Debian Version"
-    echo "========================================================"
-    echo -e "${NC}"
-    
-    # Check root
-    check_root
-    
-    # Get configuration
-    echo ""
-    read -p "Enter SSH port (default: $DEFAULT_SSH_PORT): " SSHD_PORT
-    SSHD_PORT=${SSHD_PORT:-$DEFAULT_SSH_PORT}
-    validate_port "$SSHD_PORT" "SSH"
-    
-    read -p "Enter SlowDNS port (default: $DEFAULT_DNS_PORT): " SLOWDNS_PORT
-    SLOWDNS_PORT=${SLOWDNS_PORT:-$DEFAULT_DNS_PORT}
-    validate_port "$SLOWDNS_PORT" "SlowDNS"
-    
-    read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
-    if [ -z "$NAMESERVER" ]; then
-        NAMESERVER="$DEFAULT_NAMESERVER"
-    fi
-    
-    # Get server IP
-    SERVER_IP=$(curl -s https://api.ipify.org || hostname -I | awk '{print $1}')
-    
-    echo ""
-    echo "========================================================"
-    echo "Installation Summary:"
-    echo "  Server IP:      $SERVER_IP"
-    echo "  SSH Port:       $SSHD_PORT"
-    echo "  SlowDNS Port:   $SLOWDNS_PORT"
-    echo "  Nameserver:     $NAMESERVER"
-    echo "========================================================"
-    echo ""
-    
-    read -p "Continue with installation? (y/N): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "Installation cancelled."
-        exit 0
-    fi
-    
-    # Create log file
-    echo "Installation started at $(date)" > "$LOG_FILE"
-    
-    # Update system first
-    log_info "Updating system packages..."
-    apt-get update && apt-get upgrade -y
-    
-    # Step 1: Configure firewall
-    log_info "Step 1/6: Configuring firewall..."
-    configure_ubuntu_firewall "$SSHD_PORT" "$SLOWDNS_PORT"
-    
-    # Step 2: Disable IPv6
-    log_info "Step 2/6: Disabling IPv6..."
-    configure_ubuntu_ipv6
-    
-    # Step 3: Configure DNS
-    log_info "Step 3/6: Configuring DNS..."
-    configure_ubuntu_dns
-    
-    # Step 4: Configure SSH
-    log_info "Step 4/6: Configuring SSH..."
-    if ! configure_ubuntu_ssh "$SSHD_PORT"; then
-        log_error "SSH configuration failed. Attempting to restore backup..."
-        if ls /etc/ssh/sshd_config.backup.* 2>/dev/null; then
-            cp /etc/ssh/sshd_config.backup.* /etc/ssh/sshd_config
-            systemctl restart ssh
-            log_info "SSH configuration restored"
-        fi
-        exit 1
-    fi
-    
-    # Step 5: Download and configure SlowDNS
-    log_info "Step 5/6: Setting up SlowDNS..."
-    if ! download_slowdns; then
-        log_error "Failed to download SlowDNS files"
-        exit 1
-    fi
-    
-    if ! configure_slowdns_service "$SLOWDNS_PORT" "$SSHD_PORT" "$NAMESERVER"; then
-        log_error "Failed to configure SlowDNS service"
-        exit 1
-    fi
-    
-    # Step 6: System optimization
-    log_info "Step 6/6: Optimizing system..."
-    
-    # Optimize kernel parameters
-    cat > /etc/sysctl.d/99-optimize.conf << EOF
+    # Kernel optimizations
+    cat >> /etc/sysctl.conf << EOF
 # Network optimizations
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
 net.ipv4.tcp_rmem = 4096 87380 134217728
 net.ipv4.tcp_wmem = 4096 65536 134217728
-net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_fastopen = 3
 EOF
     
-    sysctl -p /etc/sysctl.d/99-optimize.conf
-    
-    # Save configuration
-    cat > "$CONFIG_FILE" << EOF
-SERVER_IP="$SERVER_IP"
-SSH_PORT="$SSHD_PORT"
-DNS_PORT="$SLOWDNS_PORT"
-NAMESERVER="$NAMESERVER"
-INSTALL_DATE="$(date)"
-EOF
-    
-    # Final output
-    echo ""
-    echo -e "${GREEN}"
-    echo "========================================================"
-    echo "           INSTALLATION COMPLETED SUCCESSFULLY!"
-    echo "========================================================"
-    echo -e "${NC}"
-    echo ""
-    echo "Configuration:"
-    echo "  Server IP:      $SERVER_IP"
-    echo "  SSH Port:       $SSHD_PORT"
-    echo "  SlowDNS Port:   $SLOWDNS_PORT"
-    echo "  Nameserver:     $NAMESERVER"
-    echo ""
-    echo "Management Commands:"
-    echo "  systemctl status slowdns      # Check SlowDNS status"
-    echo "  systemctl restart slowdns     # Restart SlowDNS"
-    echo "  systemctl stop slowdns        # Stop SlowDNS"
-    echo "  journalctl -u slowdns -f      # View logs"
-    echo "  systemctl status ssh          # Check SSH status"
-    echo ""
-    echo "Troubleshooting:"
-    echo "  If SlowDNS fails, check: journalctl -u slowdns"
-    echo "  Test SSH: ssh -p $SSHD_PORT root@$SERVER_IP"
-    echo ""
-    echo "Configuration saved to: $CONFIG_FILE"
-    echo "Installation log: $LOG_FILE"
-    echo ""
+    sysctl -p
+    log_success "System optimized"
 }
 
-# ==============================================
-# UNINSTALL
-# ==============================================
-uninstall_ssh_slowdns() {
-    echo -e "${YELLOW}"
-    echo "========================================================"
-    echo "           Uninstall SSH + SlowDNS"
-    echo "========================================================"
-    echo -e "${NC}"
+# Main installation
+main_install() {
+    clear
+    echo "========================================="
+    echo "  OpenSSH + SlowDNS Installer for Ubuntu"
+    echo "========================================="
+    echo ""
     
-    read -p "Are you sure you want to uninstall? (y/N): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "Uninstall cancelled."
-        exit 0
+    check_root
+    get_ip
+    
+    # Get configuration
+    read -p "Enter SSH port (default: $SSH_PORT): " input
+    [ ! -z "$input" ] && SSH_PORT=$input
+    
+    read -p "Enter SlowDNS port (default: $DNS_PORT): " input
+    [ ! -z "$input" ] && DNS_PORT=$input
+    
+    read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
+    if [ -z "$NAMESERVER" ]; then
+        log_error "Nameserver is required!"
+        exit 1
     fi
     
-    echo "Starting uninstallation..."
+    echo ""
+    echo "Configuration:"
+    echo "  SSH Port: $SSH_PORT"
+    echo "  SlowDNS Port: $DNS_PORT"
+    echo "  Nameserver: $NAMESERVER"
+    echo "  Server IP: $SERVER_IP"
+    echo ""
     
-    # Stop and disable SlowDNS
+    read -p "Continue? (y/N): " confirm
+    [[ ! "$confirm" =~ ^[Yy]$ ]] && exit 0
+    
+    # Installation steps
+    install_deps
+    setup_firewall
+    disable_ipv6
+    setup_ssh
+    
+    if ! download_slowdns; then
+        log_error "Failed to download SlowDNS files"
+        exit 1
+    fi
+    
+    create_startup_script
+    optimize_system
+    
+    if test_slowdns; then
+        echo ""
+        echo "========================================="
+        log_success "     INSTALLATION COMPLETED!"
+        echo "========================================="
+        echo ""
+        echo "Server IP: $SERVER_IP"
+        echo "SSH Port: $SSH_PORT"
+        echo "SlowDNS Port: $DNS_PORT"
+        echo "Nameserver: $NAMESERVER"
+        echo ""
+        echo "Commands:"
+        echo "  systemctl status slowdns"
+        echo "  systemctl restart slowdns"
+        echo "  journalctl -u slowdns -f"
+        echo ""
+    else
+        log_error "Installation had issues. Check above for errors."
+    fi
+}
+
+# Uninstall
+uninstall() {
+    echo "========================================="
+    echo "  Uninstall SlowDNS"
+    echo "========================================="
+    echo ""
+    
+    read -p "Are you sure? (y/N): " confirm
+    [[ ! "$confirm" =~ ^[Yy]$ ]] && exit 0
+    
+    log_info "Stopping services..."
     systemctl stop slowdns.service 2>/dev/null || true
     systemctl disable slowdns.service 2>/dev/null || true
+    pkill -f sldns-server 2>/dev/null || true
+    
+    log_info "Removing files..."
+    rm -rf /etc/slowdns
     rm -f /etc/systemd/system/slowdns.service
     systemctl daemon-reload
     
-    # Remove SlowDNS files
-    rm -rf /etc/slowdns
-    
-    # Restore SSH config from backup
-    if ls /etc/ssh/sshd_config.backup.* 2>/dev/null; then
-        latest_backup=$(ls -t /etc/ssh/sshd_config.backup.* | head -1)
-        cp "$latest_backup" /etc/ssh/sshd_config
+    log_info "Restoring SSH config..."
+    if [ -f /etc/ssh/sshd_config.backup ]; then
+        cp /etc/ssh/sshd_config.backup /etc/ssh/sshd_config
         systemctl restart ssh
-        echo "SSH configuration restored from backup"
     fi
     
-    # Remove IPv6 disable
-    rm -f /etc/sysctl.d/99-disable-ipv6.conf 2>/dev/null
-    sysctl -w net.ipv6.conf.all.disable_ipv6=0
-    
-    # Remove DNS configuration
-    if [ -f /etc/resolv.conf ]; then
-        chattr -i /etc/resolv.conf 2>/dev/null || true
-    fi
-    
-    # Remove optimization config
-    rm -f /etc/sysctl.d/99-optimize.conf 2>/dev/null
-    
-    # Remove config file
-    rm -f "$CONFIG_FILE"
-    
-    echo ""
-    echo -e "${GREEN}Uninstallation completed!${NC}"
-    echo "Note: Firewall rules and iptables configuration remain unchanged."
-    echo "To reset firewall: iptables -F"
+    log_success "Uninstallation complete!"
 }
 
-# ==============================================
-# STATUS CHECK
-# ==============================================
+# Status check
 check_status() {
-    echo "=== SSH + SlowDNS Status ==="
+    echo "========================================="
+    echo "  Service Status"
+    echo "========================================="
     echo ""
     
-    # Check SSH
-    echo "SSH Service:"
-    if systemctl is-active --quiet ssh; then
-        echo "  Status: Active"
-        ssh_port=$(grep "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo "22")
-        echo "  Port: $ssh_port"
+    echo "SSH Status:"
+    systemctl status ssh --no-pager | grep -E "(Active|Port)" || echo "  Not configured"
+    echo ""
+    
+    echo "SlowDNS Status:"
+    if systemctl is-active slowdns.service 2>/dev/null; then
+        echo "  Active"
+        systemctl status slowdns.service --no-pager | grep -E "(Active|PID)" || true
     else
-        echo "  Status: Inactive"
+        echo "  Inactive"
     fi
     echo ""
     
-    # Check SlowDNS
-    echo "SlowDNS Service:"
-    if systemctl is-active --quiet slowdns.service 2>/dev/null; then
-        echo "  Status: Active"
-        if [ -f "$CONFIG_FILE" ]; then
-            . "$CONFIG_FILE" 2>/dev/null || true
-            echo "  Port: ${DNS_PORT:-Unknown}"
-            echo "  Nameserver: ${NAMESERVER:-Unknown}"
-        fi
-    else
-        echo "  Status: Not installed or inactive"
-    fi
-    echo ""
-    
-    # Check ports
-    echo "Listening Ports:"
-    echo "  SSH ($ssh_port):"
-    ss -tlnp | grep ":$ssh_port " || echo "    Not listening"
-    echo ""
-    echo "  SlowDNS (5300):"
-    ss -ulnp | grep ":5300 " || echo "    Not listening"
+    echo "Ports listening:"
+    echo "  SSH ($SSH_PORT): $(ss -tlnp | grep -c ":$SSH_PORT " || echo 0) connections"
+    echo "  SlowDNS ($DNS_PORT): $(ss -ulnp | grep -c ":$DNS_PORT " || echo 0) connections"
 }
 
-# ==============================================
-# MAIN SCRIPT
-# ==============================================
+# Menu
 case "${1:-install}" in
-    "install")
-        install_ssh_slowdns
+    install)
+        main_install
         ;;
-    "uninstall")
-        uninstall_ssh_slowdns
+    uninstall)
+        uninstall
         ;;
-    "status")
+    status)
         check_status
         ;;
-    "help")
+    help)
         echo "Usage: $0 [install|uninstall|status|help]"
         echo ""
         echo "Commands:"
-        echo "  install     - Install SSH + SlowDNS (default)"
-        echo "  uninstall   - Remove SSH + SlowDNS"
-        echo "  status      - Check current status"
-        echo "  help        - Show this help"
+        echo "  install    - Install SSH + SlowDNS"
+        echo "  uninstall  - Remove installation"
+        echo "  status     - Check service status"
+        echo "  help       - Show this help"
         ;;
     *)
-        echo "Unknown command: $1"
-        echo "Use: $0 help"
-        exit 1
+        echo "Unknown command. Use: $0 help"
         ;;
 esac
