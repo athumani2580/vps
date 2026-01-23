@@ -9,7 +9,6 @@ NC='\033[0m'
 # SSH Port Configuration
 SSHD_PORT=22
 SLOWDNS_PORT=5300
-MTU_SIZE=1200  # Changed from 1800 to 1200
 
 # Functions
 print_success() {
@@ -118,7 +117,7 @@ echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
-# Create SlowDNS service with MTU 1200
+# Create SlowDNS service with MTU 1500
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
@@ -147,7 +146,7 @@ EOF
 
 print_success "SlowDNS service file created"
 
-# Startup config with iptables and MTU configuration
+# Startup config with iptables and MTU 1500 configuration
 print_warning "Setting up iptables and startup configuration..."
 cat > /etc/rc.local <<-END
 #!/bin/sh -e
@@ -178,17 +177,17 @@ iptables -A INPUT -m state --state INVALID -j DROP
 iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --set
 iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
-# Set MTU to 1200 for all interfaces
+# Set MTU to 1500 for all interfaces
 for iface in \$(ip link show | grep -E '^[0-9]+:' | cut -d: -f2 | tr -d ' ' | grep -v lo)
 do
-    ip link set \$iface mtu $MTU_SIZE 2>/dev/null || true
+    ip link set \$iface mtu 1500 2>/dev/null || true
 done
 
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
 sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
 
-# Additional MTU optimizations
+# Additional MTU optimizations for 1500
 sysctl -w net.ipv4.route.mtu_expires=1800 > /dev/null 2>&1
 sysctl -w net.ipv4.tcp_mtu_probing=1 > /dev/null 2>&1
 
@@ -209,11 +208,11 @@ echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
 print_success "IPv6 disabled"
 
-# Set MTU to 1200 immediately
-print_warning "Setting MTU to 1200..."
+# Set MTU to 1500 immediately
+print_warning "Setting MTU to 1500..."
 for iface in $(ip link show | grep -E '^[0-9]+:' | cut -d: -f2 | tr -d ' ' | grep -v lo)
 do
-    ip link set $iface mtu $MTU_SIZE 2>/dev/null && print_success "MTU set to $MTU_SIZE on $iface" || true
+    ip link set $iface mtu 1500 2>/dev/null && print_success "MTU set to 1500 on $iface" || true
 done
 
 # Add MTU to sysctl for persistence
@@ -286,7 +285,7 @@ echo ""
 echo "Server IP: $SERVER_IP"
 echo "SSH Port: $SSHD_PORT"
 echo "SlowDNS Port: $SLOWDNS_PORT"
-echo "MTU: $MTU_SIZE"  # Changed to show 1200
+echo "MTU: 1500"  # Changed from 1800 to 1500
 echo "Nameserver: $NAMESERVER"
 echo ""
 echo "Note: SlowDNS is running on port $SLOWDNS_PORT"
