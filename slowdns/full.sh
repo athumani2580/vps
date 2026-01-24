@@ -6,8 +6,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# SSH Port Configuration
-SSHD_PORT=222  # Changed from 22 to 222
+# Port Configuration
+SSHD_PORT=22
+SSHD_LOCAL_PORT=222  # For SlowDNS local forwarding
 SLOWDNS_PORT=5300
 
 # Functions
@@ -43,13 +44,14 @@ if [ -z "$SERVER_IP" ]; then
     SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
 
-# Configure OpenSSH
-print_warning "Configuring OpenSSH on port $SSHD_PORT..."
+# Configure OpenSSH with both ports
+print_warning "Configuring OpenSSH on ports $SSHD_PORT (public) and $SSHD_LOCAL_PORT (localhost)..."
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup 2>/dev/null
 
 cat > /etc/ssh/sshd_config << EOF
 # OpenSSH Configuration
 Port $SSHD_PORT
+Port $SSHD_LOCAL_PORT
 Protocol 2
 PermitRootLogin yes
 PubkeyAuthentication yes
@@ -71,11 +73,14 @@ MaxSessions 100
 MaxStartups 100:30:200
 LoginGraceTime 30
 UseDNS no
+
+# Restrict port $SSHD_LOCAL_PORT to localhost only
+ListenAddress 127.0.0.1:$SSHD_LOCAL_PORT
 EOF
 
 systemctl restart sshd
 sleep 2
-print_success "OpenSSH configured on port $SSHD_PORT"
+print_success "OpenSSH configured on port $SSHD_PORT (public) and $SSHD_LOCAL_PORT (localhost only)"
 
 # Setup SlowDNS
 print_warning "Setting up SlowDNS..."
@@ -126,7 +131,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_LOCAL_PORT
 Restart=always
 RestartSec=5
 User=root
@@ -155,7 +160,8 @@ iptables -P OUTPUT ACCEPT
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -A INPUT -p tcp --dport $SSHD_PORT -j ACCEPT
+iptables -A INPUT -p tcp --dport $SSHD_LOCAL_PORT -j ACCEPT
+iptables -A INPUT -p tcp --dport $SSHD_LOCAL_PORT -j ACCEPT
 iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
 iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
 iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
@@ -165,12 +171,16 @@ iptables -A INPUT -p icmp -j ACCEPT
 iptables -A OUTPUT -j ACCEPT
 iptables -A INPUT -m state --state INVALID -j DROP
 
-iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --set
-iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
+iptables -A INPUT -p tcp --dport $SSHD_LOCAL_PORT -m state --state NEW -m recent --set
+iptables -A INPUT -p tcp --dport $SSHD_LOCAL_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
 sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
+
+# Allow localhost access to port $SSHD_LOCAL_PORT
+iptables -A INPUT -p tcp -s 127.0.0.1 --dport $SSHD_LOCAL_PORT -j ACCEPT
+iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport $SSHD_LOCAL_PORT -j ACCEPT
 
 exit 0
 END
@@ -225,7 +235,7 @@ if systemctl is-active --quiet server-sldns; then
         
         # Try direct start
         pkill sldns-server 2>/dev/null
-        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_LOCAL_PORT &
         sleep 2
         
         if pgrep -x "sldns-server" > /dev/null; then
@@ -238,12 +248,21 @@ else
     print_error "SlowDNS service failed to start"
 fi
 
-# Test SSH connection
-print_warning "Testing SSH connection..."
+# Test SSH connections
+print_warning "Testing SSH connections..."
+
+# Test public SSH port
 if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$SSHD_PORT" 2>/dev/null; then
-    print_success "SSH port $SSHD_PORT is accessible"
+    print_success "SSH public port $SSHD_PORT is accessible"
 else
-    print_error "SSH port $SSHD_PORT is not accessible"
+    print_error "SSH public port $SSHD_PORT is not accessible"
+fi
+
+# Test local SSH port
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$SSHD_LOCAL_PORT" 2>/dev/null; then
+    print_success "SSH local port $SSHD_LOCAL_PORT is accessible (localhost only)"
+else
+    print_error "SSH local port $SSHD_LOCAL_PORT is not accessible"
 fi
 
 echo ""
@@ -252,10 +271,12 @@ print_success "           OpenSSH SlowDNS Installation Completed!"
 echo "=================================================================="
 echo ""
 echo "Server IP: $SERVER_IP"
-echo "SSH Port: $SSHD_PORT"
+echo "SSH Public Port: $SSHD_PORT (accessible from anywhere)"
+echo "SSH Local Port: $SSHD_LOCAL_PORT (127.0.0.1 only)"
 echo "SlowDNS Port: $SLOWDNS_PORT"
 echo "MTU: 1800"
 echo "Nameserver: $NAMESERVER"
+echo "SlowDNS Forwarding: 127.0.0.1:$SSHD_LOCAL_PORT"
 echo ""
 echo "Note: SlowDNS is running on port $SLOWDNS_PORT"
 echo "=================================================================="
@@ -265,6 +286,7 @@ echo "  systemctl start server-sldns      # Start SlowDNS"
 echo "  systemctl stop server-sldns       # Stop SlowDNS"
 echo "  systemctl status server-sldns     # Check status"
 echo "  journalctl -u server-sldns -f     # View logs"
+echo "  netstat -tlnp | grep ssh          # Check SSH ports"
 echo ""
 
 echo ""
