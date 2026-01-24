@@ -130,15 +130,6 @@ ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file 
 Restart=always
 RestartSec=5
 User=root
-StandardOutput=journal
-StandardError=journal
-Environment=GODEBUG=netdns=go
-WorkingDirectory=/etc/slowdns
-
-# Debug settings
-PermissionsStartOnly=true
-LimitNOFILE=65536
-LimitNPROC=65536
 
 [Install]
 WantedBy=multi-user.target
