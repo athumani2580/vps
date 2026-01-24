@@ -7,7 +7,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # SSH Port Configuration
-SSHD_PORT=22
+SSHD_PORT=222  # Changed from 22 to 222
 SLOWDNS_PORT=5300
 
 # Functions
