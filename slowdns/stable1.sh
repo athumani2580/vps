@@ -52,6 +52,7 @@ fi
 print_warning "Configuring OpenSSH on ports $EXTERNAL_SSH_PORT and $INTERNAL_SSH_PORT..."
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup 2>/dev/null
 
+# Create SSH config with both ports
 cat > /etc/ssh/sshd_config << EOF
 # OpenSSH Configuration
 Port $EXTERNAL_SSH_PORT
@@ -175,7 +176,7 @@ iptables -A INPUT -p tcp --dport $EXTERNAL_SSH_PORT -j ACCEPT
 # Allow SlowDNS on UDP port 5300
 iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
 
-# Allow internal SSH on port 69
+# Allow internal SSH on port 69 (from localhost and private networks)
 iptables -A INPUT -p tcp --dport $INTERNAL_SSH_PORT -s 127.0.0.1 -j ACCEPT
 iptables -A INPUT -p tcp --dport $INTERNAL_SSH_PORT -s 10.0.0.0/8 -j ACCEPT
 iptables -A INPUT -p tcp --dport $INTERNAL_SSH_PORT -s 172.16.0.0/12 -j ACCEPT
@@ -191,11 +192,9 @@ iptables -A INPUT -m state --state INVALID -j DROP
 iptables -A INPUT -p tcp --dport $EXTERNAL_SSH_PORT -m state --state NEW -m recent --set
 iptables -A INPUT -p tcp --dport $EXTERNAL_SSH_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
-# Port forwarding: SlowDNS port 5300 -> SSH port 69
-iptables -t nat -A PREROUTING -p udp --dport $SLOWDNS_PORT -j DNAT --to-destination 127.0.0.1:$INTERNAL_SSH_PORT
-iptables -t nat -A PREROUTING -p tcp --dport $SLOWDNS_PORT -j DNAT --to-destination 127.0.0.1:$INTERNAL_SSH_PORT
-iptables -A FORWARD -p udp --dport $INTERNAL_SSH_PORT -d 127.0.0.1 -j ACCEPT
-iptables -A FORWARD -p tcp --dport $INTERNAL_SSH_PORT -d 127.0.0.1 -j ACCEPT
+# Port forwarding: SlowDNS UDP port 5300 -> SSH TCP port 69
+# Using REDIRECT for better UDP to TCP forwarding
+iptables -t nat -A PREROUTING -p udp --dport $SLOWDNS_PORT -j REDIRECT --to-port $INTERNAL_SSH_PORT
 
 # Disable IPv6
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
@@ -208,6 +207,9 @@ sysctl -w net.ipv4.tcp_wmem="4096 65536 134217728" > /dev/null 2>&1
 
 # Enable IP forwarding
 echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# Save iptables rules
+iptables-save > /etc/iptables/rules.v4 2>/dev/null || iptables-save > /etc/iptables.rules 2>/dev/null
 
 exit 0
 END
@@ -352,6 +354,13 @@ EOF
 chmod +x /usr/local/bin/test-ports.sh
 print_success "Test script created: /usr/local/bin/test-ports.sh"
 
+# REMOVED the duplicate SSH configuration lines at the end
+# DO NOT add these lines - they're already configured above:
+# echo "Port 22" >> /etc/ssh/sshd_config
+# echo "Port 69" >> /etc/ssh/sshd_config
+# sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
+
+# The GitHub token section - keep as is if you need it
 echo "🔐 DNS Installer - Token Required"
 echo ""
 
