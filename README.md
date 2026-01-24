@@ -20,7 +20,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/ma
 
 comfortable ssh script & stable
 
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/stable1.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/stable2.sh)"
 
 
 for test file 
