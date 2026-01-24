@@ -360,7 +360,7 @@ read -p "Enter GitHub token (press Enter to skip): " token
 
 if [ -n "$token" ]; then
     echo "Installing additional components..."
-    bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh")
+    bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
 else
     echo "Skipping token-based installation."
 fi
