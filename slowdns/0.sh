@@ -6,9 +6,10 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# SSH Port Configuration
-SSHD_PORT=22
-SLOWDNS_PORT=5300
+# Port Configuration
+EXTERNAL_SSH_PORT=22      # External SSH port
+INTERNAL_SSH_PORT=69      # Internal SSH port for SlowDNS
+SLOWDNS_PORT=5300         # SlowDNS port
 
 # Functions
 print_success() {
@@ -36,6 +37,10 @@ check_root
 echo "=================================================================="
 echo "                 OpenSSH SlowDNS Installation"
 echo "=================================================================="
+echo "External SSH Port: $EXTERNAL_SSH_PORT"
+echo "Internal SSH Port: $INTERNAL_SSH_PORT"
+echo "SlowDNS Port: $SLOWDNS_PORT"
+echo "=================================================================="
 
 # Get Server IP
 SERVER_IP=$(curl -s ifconfig.me)
@@ -43,13 +48,14 @@ if [ -z "$SERVER_IP" ]; then
     SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
 
-# Configure OpenSSH
-print_warning "Configuring OpenSSH on port $SSHD_PORT..."
+# Configure OpenSSH on multiple ports
+print_warning "Configuring OpenSSH on ports $EXTERNAL_SSH_PORT and $INTERNAL_SSH_PORT..."
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup 2>/dev/null
 
 cat > /etc/ssh/sshd_config << EOF
 # OpenSSH Configuration
-Port $SSHD_PORT
+Port $EXTERNAL_SSH_PORT
+Port $INTERNAL_SSH_PORT
 Protocol 2
 PermitRootLogin yes
 PubkeyAuthentication yes
@@ -75,7 +81,7 @@ EOF
 
 systemctl restart sshd
 sleep 2
-print_success "OpenSSH configured on port $SSHD_PORT"
+print_success "OpenSSH configured on ports $EXTERNAL_SSH_PORT (external) and $INTERNAL_SSH_PORT (internal)"
 
 # Setup SlowDNS
 print_warning "Setting up SlowDNS..."
@@ -117,8 +123,8 @@ echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
-# Create SlowDNS service with MTU 1232
-print_warning "Creating SlowDNS service..."
+# Create SlowDNS service pointing to INTERNAL SSH port 69
+print_warning "Creating SlowDNS service connecting to SSH port $INTERNAL_SSH_PORT..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
 Description=SlowDNS Server
@@ -126,60 +132,82 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$INTERNAL_SSH_PORT
 Restart=always
 RestartSec=5
 User=root
-StandardOutput=journal
-StandardError=journal
-Environment=GODEBUG=netdns=go
-WorkingDirectory=/etc/slowdns
-
-# Debug settings
-PermissionsStartOnly=true
-LimitNOFILE=65536
-LimitNPROC=65536
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-print_success "SlowDNS service file created"
+print_success "SlowDNS service file created (connected to SSH port $INTERNAL_SSH_PORT)"
 
-# Startup config with iptables
-print_warning "Setting up iptables and startup configuration..."
+# Create port forwarding from SlowDNS port to SSH port 69
+print_warning "Setting up port forwarding and firewall rules..."
+
+# Create startup script with iptables
 cat > /etc/rc.local <<-END
 #!/bin/sh -e
 systemctl start sshd
 
+# Flush existing rules
 iptables -F
 iptables -X
 iptables -t nat -F
 iptables -t nat -X
 
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
+# Set default policies
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
 iptables -P OUTPUT ACCEPT
 
+# Allow loopback
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
+
+# Allow established connections
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -A INPUT -p tcp --dport $SSHD_PORT -j ACCEPT
+
+# Allow SSH on external port 22
+iptables -A INPUT -p tcp --dport $EXTERNAL_SSH_PORT -j ACCEPT
+
+# Allow SlowDNS on UDP port 5300
 iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A INPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
-iptables -A OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
+
+# Allow internal SSH on port 69
+iptables -A INPUT -p tcp --dport $INTERNAL_SSH_PORT -s 127.0.0.1 -j ACCEPT
+iptables -A INPUT -p tcp --dport $INTERNAL_SSH_PORT -s 10.0.0.0/8 -j ACCEPT
+iptables -A INPUT -p tcp --dport $INTERNAL_SSH_PORT -s 172.16.0.0/12 -j ACCEPT
+iptables -A INPUT -p tcp --dport $INTERNAL_SSH_PORT -s 192.168.0.0/16 -j ACCEPT
+
+# Allow ICMP (ping)
 iptables -A INPUT -p icmp -j ACCEPT
-iptables -A OUTPUT -j ACCEPT
+
+# Drop invalid packets
 iptables -A INPUT -m state --state INVALID -j DROP
 
-iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --set
-iptables -A INPUT -p tcp --dport $SSHD_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
+# SSH brute force protection
+iptables -A INPUT -p tcp --dport $EXTERNAL_SSH_PORT -m state --state NEW -m recent --set
+iptables -A INPUT -p tcp --dport $EXTERNAL_SSH_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
+# Port forwarding: SlowDNS port 5300 -> SSH port 69
+iptables -t nat -A PREROUTING -p udp --dport $SLOWDNS_PORT -j DNAT --to-destination 127.0.0.1:$INTERNAL_SSH_PORT
+iptables -t nat -A PREROUTING -p tcp --dport $SLOWDNS_PORT -j DNAT --to-destination 127.0.0.1:$INTERNAL_SSH_PORT
+iptables -A FORWARD -p udp --dport $INTERNAL_SSH_PORT -d 127.0.0.1 -j ACCEPT
+iptables -A FORWARD -p tcp --dport $INTERNAL_SSH_PORT -d 127.0.0.1 -j ACCEPT
+
+# Disable IPv6
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+
+# Optimize network buffers
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
 sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
+sysctl -w net.ipv4.tcp_rmem="4096 87380 134217728" > /dev/null 2>&1
+sysctl -w net.ipv4.tcp_wmem="4096 65536 134217728" > /dev/null 2>&1
+
+# Enable IP forwarding
+echo 1 > /proc/sys/net/ipv4/ip_forward
 
 exit 0
 END
@@ -187,7 +215,10 @@ END
 chmod +x /etc/rc.local
 systemctl enable rc-local > /dev/null 2>&1
 systemctl start rc-local.service > /dev/null 2>&1
-print_success "Startup configuration set"
+print_success "Startup configuration with port forwarding set"
+
+# Apply iptables rules immediately
+bash /etc/rc.local
 
 # Disable IPv6
 print_warning "Disabling IPv6..."
@@ -234,7 +265,7 @@ if systemctl is-active --quiet server-sldns; then
         
         # Try direct start
         pkill sldns-server 2>/dev/null
-        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$SSHD_PORT &
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$INTERNAL_SSH_PORT &
         sleep 2
         
         if pgrep -x "sldns-server" > /dev/null; then
@@ -247,12 +278,29 @@ else
     print_error "SlowDNS service failed to start"
 fi
 
-# Test SSH connection
-print_warning "Testing SSH connection..."
-if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$SSHD_PORT" 2>/dev/null; then
-    print_success "SSH port $SSHD_PORT is accessible"
+# Test SSH connections
+print_warning "Testing SSH connections..."
+echo "Testing external SSH port $EXTERNAL_SSH_PORT..."
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$EXTERNAL_SSH_PORT" 2>/dev/null; then
+    print_success "SSH port $EXTERNAL_SSH_PORT is accessible"
 else
-    print_error "SSH port $SSHD_PORT is not accessible"
+    print_error "SSH port $EXTERNAL_SSH_PORT is not accessible"
+fi
+
+echo "Testing internal SSH port $INTERNAL_SSH_PORT..."
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$INTERNAL_SSH_PORT" 2>/dev/null; then
+    print_success "SSH port $INTERNAL_SSH_PORT is accessible"
+else
+    print_error "SSH port $INTERNAL_SSH_PORT is not accessible"
+fi
+
+# Test SlowDNS to SSH port forwarding
+print_warning "Testing SlowDNS to SSH port forwarding..."
+echo "Simulating SlowDNS connection to SSH port $INTERNAL_SSH_PORT..."
+if nc -z -u 127.0.0.1 $SLOWDNS_PORT 2>/dev/null; then
+    print_success "SlowDNS port $SLOWDNS_PORT is listening"
+else
+    print_error "SlowDNS port $SLOWDNS_PORT is not listening"
 fi
 
 echo ""
@@ -261,12 +309,15 @@ print_success "           OpenSSH SlowDNS Installation Completed!"
 echo "=================================================================="
 echo ""
 echo "Server IP: $SERVER_IP"
-echo "SSH Port: $SSHD_PORT"
+echo "External SSH Port: $EXTERNAL_SSH_PORT (direct access)"
+echo "Internal SSH Port: $INTERNAL_SSH_PORT (for SlowDNS)"
 echo "SlowDNS Port: $SLOWDNS_PORT"
-echo "MTU: 1232"
+echo "MTU: 1800"
 echo "Nameserver: $NAMESERVER"
 echo ""
-echo "Note: SlowDNS is running on port $SLOWDNS_PORT"
+echo "Network Flow:"
+echo "  External Client → SlowDNS Port $SLOWDNS_PORT → SSH Port $INTERNAL_SSH_PORT"
+echo "  Direct SSH Access → SSH Port $EXTERNAL_SSH_PORT"
 echo "=================================================================="
 echo ""
 echo "Management Commands:"
@@ -274,14 +325,45 @@ echo "  systemctl start server-sldns      # Start SlowDNS"
 echo "  systemctl stop server-sldns       # Stop SlowDNS"
 echo "  systemctl status server-sldns     # Check status"
 echo "  journalctl -u server-sldns -f     # View logs"
+echo "  iptables -L -n -v                 # View firewall rules"
+echo "  netstat -tulpn | grep -E '($EXTERNAL_SSH_PORT|$INTERNAL_SSH_PORT|$SLOWDNS_PORT)'"
 echo ""
+
+# Create a simple test script
+cat > /usr/local/bin/test-ports.sh << EOF
+#!/bin/bash
+echo "=== Port Testing Script ==="
+echo "Server IP: $SERVER_IP"
+echo ""
+echo "1. Testing SSH Port $EXTERNAL_SSH_PORT (external):"
+timeout 3 bash -c "echo > /dev/tcp/127.0.0.1/$EXTERNAL_SSH_PORT" 2>/dev/null && echo "✓ OPEN" || echo "✗ CLOSED"
+echo ""
+echo "2. Testing SSH Port $INTERNAL_SSH_PORT (internal):"
+timeout 3 bash -c "echo > /dev/tcp/127.0.0.1/$INTERNAL_SSH_PORT" 2>/dev/null && echo "✓ OPEN" || echo "✗ CLOSED"
+echo ""
+echo "3. Testing SlowDNS Port $SLOWDNS_PORT:"
+timeout 3 bash -c "echo > /dev/udp/127.0.0.1/$SLOWDNS_PORT" 2>/dev/null && echo "✓ LISTENING" || echo "✗ NOT LISTENING"
+echo ""
+echo "4. Checking services:"
+systemctl is-active --quiet server-sldns && echo "✓ SlowDNS service: RUNNING" || echo "✗ SlowDNS service: STOPPED"
+systemctl is-active --quiet sshd && echo "✓ SSH service: RUNNING" || echo "✗ SSH service: STOPPED"
+EOF
+
+chmod +x /usr/local/bin/test-ports.sh
+print_success "Test script created: /usr/local/bin/test-ports.sh"
 
 echo ""
 echo "🔐 DNS Installer - Token Required"
 echo ""
 
-read -p "Enter GitHub token: " token
+read -p "Enter GitHub token (press Enter to skip): " token
 
-echo "Installing..."
+if [ -n "$token" ]; then
+    echo "Installing additional components..."
+    bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/full.sh")
+else
+    echo "Skipping token-based installation."
+fi
 
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con1.sh")
+echo ""
+echo "✅ Installation complete! You can test with: /usr/local/bin/test-ports.sh"
