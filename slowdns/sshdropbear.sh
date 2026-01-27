@@ -6,8 +6,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# Configuration
-DROPBEAR_PORT=222
+# SSH Port Configuration
+DROPBEAR_PORT=69
 SLOWDNS_PORT=5300
 
 # Functions
@@ -43,73 +43,38 @@ if [ -z "$SERVER_IP" ]; then
     SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
 
-# Install Dropbear SlowDNS
-echo ""
-echo "================= Dropbear SlowDNS Setup ================="
+# Install and Configure Dropbear
+print_warning "Installing and configuring Dropbear..."
 
-# Configure Dropbear
-print_warning "Installing and configuring Dropbear on port $DROPBEAR_PORT..."
+# Install Dropbear
+apt-get update -y > /dev/null 2>&1
+apt-get install dropbear -y > /dev/null 2>&1
 
-# Install Dropbear if not present
-if ! command -v dropbear &> /dev/null; then
-    apt-get update > /dev/null 2>&1
-    apt-get install -y dropbear > /dev/null 2>&1
-    print_success "Dropbear installed"
-else
-    print_success "Dropbear already installed"
+if [ $? -ne 0 ]; then
+    print_error "Failed to install Dropbear"
+    exit 1
 fi
-
-# Backup original config
-cp /etc/default/dropbear /etc/default/dropbear.backup 2>/dev/null
 
 # Configure Dropbear
 cat > /etc/default/dropbear << EOF
-# Dropbear SSH server configuration
-DROPBEAR_EXTRA_ARGS="-p $DROPBEAR_PORT"
+DROPBEAR_PORT=${DROPBEAR_PORT}
+DROPBEAR_EXTRA_ARGS=""
+DROPBEAR_BANNER=""
 NO_START=0
-# Enable password authentication
-DROPBEAR_PASSWORD_AUTH="on"
 EOF
 
-# Create Dropbear config directory if needed
-mkdir -p /etc/dropbear
-
-# Generate host keys if they don't exist
+# Generate SSH host keys if they don't exist
 if [ ! -f /etc/dropbear/dropbear_rsa_host_key ]; then
     dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key -s 2048 > /dev/null 2>&1
-    print_success "Generated RSA host key"
 fi
 
 if [ ! -f /etc/dropbear/dropbear_dss_host_key ]; then
     dropbearkey -t dss -f /etc/dropbear/dropbear_dss_host_key > /dev/null 2>&1
-    print_success "Generated DSS host key"
 fi
 
-if [ ! -f /etc/dropbear/dropbear_ecdsa_host_key ]; then
-    dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key > /dev/null 2>&1
-    print_success "Generated ECDSA host key"
-fi
-
-# Stop any running Dropbear instances
-pkill dropbear 2>/dev/null
-
-# Start Dropbear
-dropbear -p $DROPBEAR_PORT -F -E > /dev/null 2>&1 &
+systemctl restart dropbear 2>/dev/null
 sleep 2
-
-# Verify Dropbear is running
-if pgrep dropbear > /dev/null; then
-    print_success "Dropbear configured and running on port $DROPBEAR_PORT"
-else
-    print_error "Failed to start Dropbear, trying alternative method..."
-    service dropbear restart > /dev/null 2>&1
-    sleep 2
-    if pgrep dropbear > /dev/null; then
-        print_success "Dropbear started via service"
-    else
-        print_error "Dropbear failed to start"
-    fi
-fi
+print_success "Dropbear configured on port ${DROPBEAR_PORT}"
 
 # Setup SlowDNS
 print_warning "Setting up SlowDNS..."
@@ -119,24 +84,30 @@ print_success "SlowDNS directory created"
 
 # Download files
 print_warning "Downloading SlowDNS files..."
+
 wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
-if [ $? -ne 0 ]; then
-    wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/server.key"
+if [ $? -eq 0 ]; then
+    print_success "server.key downloaded"
+else
+    print_error "Failed to download server.key"
 fi
-print_success "server.key downloaded"
 
 wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
-if [ $? -ne 0 ]; then
-    wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/server.pub"
+if [ $? -eq 0 ]; then
+    print_success "server.pub downloaded"
+else
+    print_error "Failed to download server.pub"
 fi
-print_success "server.pub downloaded"
 
 wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
-if [ $? -ne 0 ]; then
-    wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
+if [ $? -eq 0 ]; then
+    print_success "sldns-server downloaded"
+else
+    print_error "Failed to download sldns-server"
 fi
+
 chmod +x /etc/slowdns/sldns-server
-print_success "sldns-server downloaded and made executable"
+print_success "File permissions set"
 
 # Get nameserver
 echo ""
@@ -147,30 +118,32 @@ echo ""
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=SlowDNS Server
-After=network.target
+Description=Server SlowDNS ALIEN
+Documentation=https://man himself
+After=network.target nss-lookup.target
 
 [Service]
 Type=simple
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT
 Restart=always
-RestartSec=2
-User=root
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
 print_success "SlowDNS service file created"
 
 # Startup config with iptables
 print_warning "Setting up iptables and startup configuration..."
+
 cat > /etc/rc.local <<-END
 #!/bin/sh -e
-# Start Dropbear
-pkill dropbear 2>/dev/null
-dropbear -p $DROPBEAR_PORT -F -E > /dev/null 2>&1 &
-
-# Configure iptables
+systemctl start dropbear
 iptables -F
 iptables -X
 iptables -t nat -F
@@ -178,8 +151,6 @@ iptables -t nat -X
 iptables -P INPUT ACCEPT
 iptables -P FORWARD ACCEPT
 iptables -P OUTPUT ACCEPT
-
-# Basic rules
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
@@ -191,21 +162,12 @@ iptables -A INPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
 iptables -A OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
 iptables -A INPUT -p icmp -j ACCEPT
 iptables -A OUTPUT -j ACCEPT
-
-# Drop invalid packets
 iptables -A INPUT -m state --state INVALID -j DROP
-
-# Rate limiting for SSH
 iptables -A INPUT -p tcp --dport $DROPBEAR_PORT -m state --state NEW -m recent --set
 iptables -A INPUT -p tcp --dport $DROPBEAR_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
-
-# Disable IPv6
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
-
-# Network optimizations
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
 sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
-
 exit 0
 END
 
@@ -223,8 +185,8 @@ echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
 print_success "IPv6 disabled"
 
-# NEW: Configure DNS servers and disable systemd-resolved
-print_warning "Configuring DNS servers..."
+# Disable systemd-resolved and set custom DNS
+print_warning "Configuring DNS settings..."
 systemctl stop systemd-resolved 2>/dev/null
 systemctl disable systemd-resolved 2>/dev/null
 systemctl mask systemd-resolved 2>/dev/null
@@ -245,7 +207,6 @@ sleep 3
 
 if systemctl is-active --quiet server-sldns; then
     print_success "SlowDNS service started"
-    
     # Test SlowDNS
     print_warning "Testing SlowDNS functionality..."
     sleep 2
@@ -273,26 +234,15 @@ if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$DROPBEAR_PORT" 2>/dev/null; the
     print_success "Dropbear port $DROPBEAR_PORT is accessible"
 else
     print_error "Dropbear port $DROPBEAR_PORT is not accessible"
-    # Try to start Dropbear again
-    pkill dropbear 2>/dev/null
-    dropbear -p $DROPBEAR_PORT -F -E > /dev/null 2>&1 &
-    sleep 2
-    if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$DROPBEAR_PORT" 2>/dev/null; then
-        print_success "Dropbear restarted and accessible"
-    fi
 fi
 
 echo ""
-print_success "Installation Completed!"
-echo ""
 echo "=================================================================="
-
+print_success " Dropbear SlowDNS Installation Completed!"
+echo "=================================================================="
 echo ""
 echo "🔐 DNS Installer - Token Required"
 echo ""
-
 read -p "Enter GitHub token: " token
-
 echo "Installing..."
-
 bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
