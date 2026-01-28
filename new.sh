@@ -4,20 +4,26 @@
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Port Configuration
-SSH_PORT=22
-SLOWDNS_UDP_PORT=5353  # Internal SlowDNS UDP port
-HTTP_PORT=53           # External HTTP wrapper on DNS port (53)
-DNS_PORT=53            # Standard DNS port
+SSHD_PORT=22
+SLOWDNS_PORT=5300
+SWITCH_PORT=53
+TARGET_PORT=101
 
 # Functions
-print_success() { echo -e "${GREEN}[✓]${NC} $1"; }
-print_error() { echo -e "${RED}[✗]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
-print_info() { echo -e "${BLUE}[i]${NC} $1"; }
+print_success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[✗]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
 
 check_root() {
     if [ "$EUID" -ne 0 ]; then
@@ -30,267 +36,262 @@ check_root() {
 check_root
 
 echo "=================================================================="
-echo " HTTP 101 SlowDNS on Port 53 Installation"
+echo " OpenSSH SlowDNS Installation with Port Switching"
 echo "=================================================================="
 
-# Stop existing DNS services
-print_warning "Stopping existing DNS services..."
-systemctl stop systemd-resolved 2>/dev/null
-systemctl disable systemd-resolved 2>/dev/null
-systemctl mask systemd-resolved 2>/dev/null
-pkill -9 named 2>/dev/null
-pkill -9 dnsmasq 2>/dev/null
-
-# Release port 53
-print_warning "Releasing port 53..."
-ss -tulpn | grep ":53 " | awk '{print $7}' | cut -d\" -f2 | xargs kill -9 2>/dev/null
-sleep 2
-
-# Configure SSH
-print_warning "Configuring SSH..."
-sed -i 's/#Port 22/Port 22\nPort 69/g' /etc/ssh/sshd_config
-sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
-sed -i 's/#GatewayPorts no/GatewayPorts yes/g' /etc/ssh/sshd_config
-systemctl restart sshd
-
-# Create directories
-mkdir -p /etc/fastdns
-
-# Create HTTP 101 wrapper for port 53
-print_warning "Creating HTTP 101 wrapper for port 53..."
-cat > /usr/local/bin/http101-dns-wrapper << 'EOF'
-#!/bin/bash
-# HTTP 101 Wrapper on port 53 - Looks like DNS but serves HTTP 101
-
-LISTEN_PORT=53
-UPSTREAM_HOST=127.0.0.1
-UPSTREAM_PORT=5353
-
-HTTP_101_RESPONSE="HTTP/1.1 101 Switching Protocols\r\n"
-HTTP_101_RESPONSE+="Upgrade: websocket\r\n"
-HTTP_101_RESPONSE+="Connection: Upgrade\r\n"
-HTTP_101_RESPONSE+="Sec-WebSocket-Accept: $(echo -n "dns-tunnel-key" | base64)\r\n"
-HTTP_101_RESPONSE+="Server: Cloudflare\r\n"
-HTTP_101_RESPONSE+="Date: $(date -R)\r\n\r\n"
-
-handle_connection() {
-    local client_ip="$1"
-    local client_port="$2"
-    
-    # Accept TCP connection
-    exec 3<>/dev/tcp/127.0.0.1/$LISTEN_PORT
-    
-    # First, check if it's HTTP traffic
-    read -t 2 -u 3 first_line
-    if [[ "$first_line" == *"HTTP"* || "$first_line" == *"GET"* || "$first_line" == *"POST"* ]]; then
-        # It's HTTP traffic - send 101 response
-        echo -en "$HTTP_101_RESPONSE" >&3
-        
-        # Now connect to SlowDNS upstream
-        exec 4<>/dev/udp/$UPSTREAM_HOST/$UPSTREAM_PORT
-        
-        # Relay traffic
-        (
-            while cat <&3 > /tmp/client_data.bin; do
-                cat /tmp/client_data.bin >&4
-            done
-        ) &
-        
-        (
-            while cat <&4 > /tmp/server_data.bin; do
-                cat /tmp/server_data.bin >&3
-            done
-        ) &
-        
-        wait
-    else
-        # It's DNS traffic - forward to real DNS (8.8.8.8)
-        echo -n "$first_line" | nc -u 8.8.8.8 53 >&3
-    fi
-}
-
-# Main loop
-echo "Starting HTTP 101 wrapper on port $LISTEN_PORT..."
-while true; do
-    # Use socat to handle both TCP and UDP on port 53
-    socat TCP-LISTEN:$LISTEN_PORT,reuseaddr,fork,keepalive \
-          UDP-LISTEN:$LISTEN_PORT,reuseaddr,fork \
-          EXEC:"/usr/local/bin/handle-dns-or-http.sh" &
-    wait $!
-    sleep 1
-done
-EOF
-
-# Create handler script
-cat > /usr/local/bin/handle-dns-or-http.sh << 'EOF'
-#!/bin/bash
-# Handler for port 53 - distinguishes between DNS and HTTP traffic
-
-read -t 1 first_bytes
-first_line=$(echo "$first_bytes" | head -c 20)
-
-# Check if it starts with DNS header (usually 00 or transaction ID)
-if [[ "$first_bytes" =~ ^[0-9a-fA-F]{4} ]]; then
-    # Looks like DNS - forward to real DNS server
-    echo "$first_bytes" | nc -w 2 -u 1.1.1.1 53
-else
-    # Send HTTP 101 response
-    echo -en "HTTP/1.1 101 Switching Protocols\r\n"
-    echo -en "Upgrade: websocket\r\n"
-    echo -en "Connection: Upgrade\r\n"
-    echo -en "Sec-WebSocket-Accept: $(echo -n "dns-web" | base64)\r\n"
-    echo -en "Server: nginx\r\n"
-    echo -en "Date: $(date -R)\r\n\r\n"
-    
-    # Now relay to SlowDNS
-    cat | nc -u 127.0.0.1 5353
+# Get Server IP
+SERVER_IP=$(curl -s ifconfig.me)
+if [ -z "$SERVER_IP" ]; then
+    SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
-EOF
 
-chmod +x /usr/local/bin/http101-dns-wrapper
-chmod +x /usr/local/bin/handle-dns-or-http.sh
+# Configure SSH ports
+print_warning "Configuring SSH ports..."
+echo "Port 22" >> /etc/ssh/sshd_config
+echo "Port $TARGET_PORT" >> /etc/ssh/sshd_config
+sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
+systemctl restart sshd 2>/dev/null
+sleep 2
+print_success "SSH configured on ports 22 and $TARGET_PORT with TCP forwarding enabled"
 
-# Download SlowDNS server
-print_warning "Downloading SlowDNS server..."
-wget -q -O /etc/fastdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
-wget -q -O /etc/fastdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
-chmod +x /etc/fastdns/sldns-server
+# Setup port switching from 53 to 101
+print_warning "Setting up port switching (53 → 101)..."
+# Install socat if not present
+if ! command -v socat &> /dev/null; then
+    apt-get update && apt-get install -y socat
+fi
 
-# Get nameserver
-echo ""
-read -p "Enter nameserver (e.g., ns1.yourdomain.com): " NAMESERVER
-echo ""
-
-# Create SlowDNS service
-print_warning "Creating SlowDNS service..."
-cat > /etc/systemd/system/fastdns.service << EOF
+# Create port switching service
+cat > /etc/systemd/system/port-switch.service << EOF
 [Unit]
-Description=FastDNS Server on port 5353
+Description=Port Switch Service (53 to 101)
 After=network.target
 
 [Service]
 Type=simple
 User=root
-ExecStart=/etc/fastdns/sldns-server -udp :5353 -privkey-file /etc/fastdns/server.key $NAMESERVER 127.0.0.1:69
+ExecStart=/usr/bin/socat TCP-LISTEN:${SWITCH_PORT},reuseaddr,fork TCP:localhost:${TARGET_PORT}
 Restart=always
-RestartSec=3
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Create HTTP 101 wrapper service
-print_warning "Creating HTTP 101 wrapper service for port 53..."
-cat > /etc/systemd/system/http101-dns.service << EOF
+systemctl daemon-reload
+systemctl enable port-switch.service
+systemctl start port-switch.service
+print_success "Port switching from ${SWITCH_PORT} to ${TARGET_PORT} configured"
+
+# Setup SlowDNS
+print_warning "Setting up SlowDNS..."
+rm -rf /etc/slowdns
+mkdir -p /etc/slowdns
+print_success "SlowDNS directory created"
+
+# Download files
+print_warning "Downloading SlowDNS files..."
+wget -q -O /etc/slowdns/server.key "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
+if [ $? -eq 0 ]; then
+    print_success "server.key downloaded"
+else
+    print_error "Failed to download server.key"
+fi
+
+wget -q -O /etc/slowdns/server.pub "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
+if [ $? -eq 0 ]; then
+    print_success "server.pub downloaded"
+else
+    print_error "Failed to download server.pub"
+fi
+
+wget -q -O /etc/slowdns/sldns-server "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
+if [ $? -eq 0 ]; then
+    print_success "sldns-server downloaded"
+else
+    print_error "Failed to download sldns-server"
+fi
+
+chmod +x /etc/slowdns/sldns-server
+print_success "File permissions set"
+
+# Get nameserver
+echo ""
+read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
+echo ""
+
+# Create SlowDNS service with MTU 1800
+print_warning "Creating SlowDNS service..."
+cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=HTTP 101 Wrapper on DNS port 53
-After=network.target fastdns.service
-Requires=fastdns.service
+Description=Server SlowDNS
+After=network.target nss-lookup.target
 
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/http101-dns-wrapper
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$TARGET_PORT
 Restart=always
-RestartSec=3
-LimitNOFILE=65536
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Setup iptables rules
-print_warning "Configuring firewall rules..."
+print_success "SlowDNS service file created"
+
+# Update rc.local with port switching rules
+print_warning "Setting up iptables and startup configuration..."
+cat > /etc/rc.local <<-END
+#!/bin/sh -e
+
+# Start services
+systemctl start sshd
+systemctl start port-switch
+
+# Clear iptables
 iptables -F
 iptables -X
 iptables -t nat -F
+iptables -t nat -X
 
-# Allow port 53 (both TCP and UDP)
-iptables -A INPUT -p tcp --dport 53 -j ACCEPT
-iptables -A INPUT -p udp --dport 53 -j ACCEPT
-iptables -A INPUT -p tcp --dport 69 -j ACCEPT
-iptables -A INPUT -p udp --dport 5353 -j ACCEPT
+# Default policies
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
 
-# Redirect all TCP 53 to our wrapper
-iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-port 53
+# Localhost
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
 
-# Block direct SSH on port 69 from outside (only allow localhost)
-iptables -A INPUT -p tcp --dport 69 -s 127.0.0.1 -j ACCEPT
-iptables -A INPUT -p tcp --dport 69 -j DROP
+# Established connections
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-# Save iptables
-iptables-save > /etc/iptables/rules.v4
+# SSH Ports
+iptables -A INPUT -p tcp --dport $TARGET_PORT -j ACCEPT
+
+# Port Switch (53 to 101)
+iptables -A INPUT -p tcp --dport $SWITCH_PORT -j ACCEPT
+
+# SlowDNS ports
+iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
+
+# ICMP
+iptables -A INPUT -p icmp -j ACCEPT
+
+# Output rules
+iptables -A OUTPUT -j ACCEPT
+
+# Drop invalid
+iptables -A INPUT -m state --state INVALID -j DROP
+
+# Rate limiting for SSH
+iptables -A INPUT -p tcp --dport $TARGET_PORT -m state --state NEW -m recent --set
+iptables -A INPUT -p tcp --dport $TARGET_PORT -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
 # Disable IPv6
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+
+# Optimize network
+sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
+sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
+
+exit 0
+END
+
+chmod +x /etc/rc.local
+systemctl enable rc-local > /dev/null 2>&1
+systemctl start rc-local.service > /dev/null 2>&1
+print_success "Startup configuration set"
+
+# Disable IPv6
+print_warning "Disabling IPv6..."
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 > /dev/null 2>&1
 echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
-sysctl -p
+echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
+sysctl -p > /dev/null 2>&1
+print_success "IPv6 disabled"
 
-# Configure DNS resolver
-echo "nameserver 1.1.1.1" > /etc/resolv.conf
-echo "nameserver 8.8.8.8" >> /etc/resolv.conf
-chattr +i /etc/resolv.conf 2>/dev/null
+# Configure DNS
+print_warning "Configuring DNS settings..."
+systemctl stop systemd-resolved 2>/dev/null
+systemctl disable systemd-resolved 2>/dev/null
+systemctl mask systemd-resolved 2>/dev/null
+pkill -9 systemd-resolved 2>/dev/null
+rm -f /etc/resolv.conf
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+chattr +i /etc/resolv.conf 2>/dev/null || true
+print_success "DNS configured"
 
-# Start services
-print_warning "Starting services..."
+# Start SlowDNS service
+print_warning "Starting SlowDNS service..."
+pkill sldns-server 2>/dev/null
 systemctl daemon-reload
-systemctl enable fastdns
-systemctl enable http101-dns
-systemctl start fastdns
-systemctl start http101-dns
-
-# Test services
-print_warning "Testing services..."
+systemctl enable server-sldns > /dev/null 2>&1
+systemctl start server-sldns
 sleep 3
 
-if systemctl is-active --quiet fastdns; then
-    print_success "FastDNS service is running on port 5353"
+if systemctl is-active --quiet server-sldns; then
+    print_success "SlowDNS service started"
 else
-    print_error "FastDNS service failed to start"
+    print_error "SlowDNS service failed to start"
+    # Try direct start
+    pkill sldns-server 2>/dev/null
+    /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$TARGET_PORT &
+    sleep 2
+    if pgrep -x "sldns-server" > /dev/null; then
+        print_success "SlowDNS started directly"
+    else
+        print_error "Failed to start SlowDNS"
+    fi
 fi
 
-if systemctl is-active --quiet http101-dns; then
-    print_success "HTTP 101 wrapper is running on port 53"
+# Test port switching
+print_warning "Testing port switching (53 → 101)..."
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$SWITCH_PORT" 2>/dev/null; then
+    print_success "Port $SWITCH_PORT is listening"
+    # Test if it redirects to 101
+    if nc -zv 127.0.0.1 $SWITCH_PORT 2>&1 | grep -q "succeeded"; then
+        print_success "Port $SWITCH_PORT is accepting connections"
+    fi
 else
-    print_error "HTTP 101 wrapper failed to start"
+    print_error "Port $SWITCH_PORT is not accessible"
 fi
 
-# Test HTTP 101 response
-print_warning "Testing HTTP 101 response on port 53..."
-if timeout 3 bash -c "echo -e 'GET / HTTP/1.1\r\nHost: localhost\r\n\r\n' | nc 127.0.0.1 53 | grep -q '101'"; then
-    print_success "HTTP 101 Switching Protocols is working on port 53"
+# Test SSH on port 101
+print_warning "Testing SSH on port $TARGET_PORT..."
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$TARGET_PORT" 2>/dev/null; then
+    print_success "SSH port $TARGET_PORT is accessible"
 else
-    print_error "HTTP 101 not working on port 53"
-fi
-
-# Test DNS fallback
-print_warning "Testing DNS fallback..."
-if timeout 3 bash -c "dig @127.0.0.1 google.com +short +tcp"; then
-    print_success "DNS fallback is working"
-else
-    print_warning "DNS fallback not working (expected for HTTP mode)"
+    print_error "SSH port $TARGET_PORT is not accessible"
 fi
 
 echo ""
 echo "=================================================================="
-print_success " Installation Complete!"
+print_success " Installation Completed!"
 echo "=================================================================="
 echo ""
-echo "📡 Server Information:"
-echo "   • HTTP 101 Port: 53 (Standard DNS port)"
-echo "   • SlowDNS UDP Port: 5353 (internal)"
-echo "   • SSH Port: 69 (internal only)"
-echo "   • Nameserver: $NAMESERVER"
+echo "🔐 Port Configuration Summary:"
+echo "   - Clients connect to port: 53"
+echo "   - Traffic switches to port: 101 (SSH)"
+echo "   - SlowDNS port: 5300"
+echo "   - Original SSH port: 22"
 echo ""
-echo "🔗 Client Connection:"
-echo "   Connect to: your-server.com:53 (TCP)"
-echo "   First receive: HTTP/1.1 101 Switching Protocols"
-echo "   Then tunnel SSH through this connection"
+echo "🔗 Connection Flow:"
+echo "   Client → Port 53 → socat → Port 101 → OpenSSH"
 echo ""
-echo "🌐 To the outside world, this looks like:"
-echo "   • Normal DNS server on port 53"
-echo "   • But responds with HTTP 101 to tunnel clients"
-echo "   • Real DNS queries are forwarded to 1.1.1.1"
+
+echo "=================================================================="
+echo "🔐 DNS Installer - Token Required"
+echo "=================================================================="
 echo ""
-echo "⚡ Usage Example:"
-echo "   ssh -o ProxyCommand='nc your-server.com 53' -p 22 user@localhost"
-echo ""
+read -p "Enter GitHub token: " token
+echo "Installing..."
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
