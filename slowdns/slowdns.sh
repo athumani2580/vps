@@ -121,30 +121,8 @@ cat > /etc/rc.local <<-END
 #!/bin/sh -e
 systemctl start sshd
 
-iptables -F
-iptables -X
-iptables -t nat -F
-iptables -t nat -X
-
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
-iptables -P OUTPUT ACCEPT
-
-iptables -A INPUT -i lo -j ACCEPT
-iptables -A OUTPUT -o lo -j ACCEPT
-iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -A INPUT -p tcp --dport 69 -j ACCEPT
-iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A INPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
-iptables -A OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
-iptables -A INPUT -p icmp -j ACCEPT
-iptables -A OUTPUT -j ACCEPT
-iptables -A INPUT -m state --state INVALID -j DROP
-
-iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --set
-iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
+iptables -I INPUT -p udp --dport 5300 -j ACCEPT
+iptables -t nat -I PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300
 
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
@@ -227,13 +205,3 @@ echo ""
 echo "=================================================================="
 print_success "           OpenSSH SlowDNS Installation Completed!"
 echo "=================================================================="
-
-echo ""
-echo "🔐 DNS Installer - Token Required"
-echo ""
-
-read -p "Enter GitHub token: " token
-
-echo "Installing..."
-
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
