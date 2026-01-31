@@ -12,15 +12,11 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/ma
 
 
 
-SSHDROPBEAR SLOWDNS  ADMIN
+OPENSSH SLOWDNS FOR ALL
 
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sshdropbear.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/slowdns.sh)"
 
 
-
-comfortable ssh script & full
-
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/install.sh)"
 
 
 for test file 
