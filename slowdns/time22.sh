@@ -47,12 +47,12 @@ fi
 print_warning "Configuring SSH ports..."
 
 echo "Port 22" >> /etc/ssh/sshd_config
-echo "Port 69" >> /etc/ssh/sshd_config
+echo "Port 22" >> /etc/ssh/sshd_config
 sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
 
 systemctl restart sshd 2>/dev/null
 sleep 2
-print_success "SSH configured on ports 22 and 69 with TCP forwarding enabled"
+print_success "SSH configured on ports 22 and 22 with TCP forwarding enabled"
 
 # Setup SlowDNS
 print_warning "Setting up SlowDNS..."
@@ -105,7 +105,7 @@ User=root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:22
 Restart=always
 RestartSec=5
 
@@ -133,7 +133,7 @@ iptables -P OUTPUT ACCEPT
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -A INPUT -p tcp --dport 69 -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
 iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
 iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
 iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
@@ -143,8 +143,8 @@ iptables -A INPUT -p icmp -j ACCEPT
 iptables -A OUTPUT -j ACCEPT
 iptables -A INPUT -m state --state INVALID -j DROP
 
-iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --set
-iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
+iptables -A INPUT -p tcp --dport 22 -m state --state NEW -m recent --set
+iptables -A INPUT -p tcp --dport 22 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
@@ -202,7 +202,7 @@ if systemctl is-active --quiet server-sldns; then
         
         # Try direct start
         pkill sldns-server 2>/dev/null
-        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69 &
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:22 &
         sleep 2
         
         if pgrep -x "sldns-server" > /dev/null; then
@@ -217,10 +217,10 @@ fi
 
 # Test SSH connection
 print_warning "Testing SSH connection..."
-if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/69" 2>/dev/null; then
-    print_success "SSH port 69 is accessible"
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/22" 2>/dev/null; then
+    print_success "SSH port 22 is accessible"
 else
-    print_error "SSH port 69 is not accessible"
+    print_error "SSH port 22 is not accessible"
 fi
 
 echo ""
@@ -236,4 +236,4 @@ read -p "Enter GitHub token: " token
 
 echo "Installing..."
 
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con.sh")
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/con1.sh")
