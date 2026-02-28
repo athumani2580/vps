@@ -34,7 +34,7 @@ check_root() {
 check_root
 
 echo "=================================================================="
-echo "            OpenSSH SlowDNS Installation with Go Banner"
+echo "            Dropbear + SlowDNS Installation"
 echo "=================================================================="
 
 # Get Server IP
@@ -43,49 +43,52 @@ if [ -z "$SERVER_IP" ]; then
     SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
 
-# Configure SSH ports with custom Go banner
-print_warning "Configuring SSH ports with SSH-2.0-Go banner..."
+# Install Dropbear
+print_warning "Installing Dropbear..."
+apt update
+apt install -y dropbear
+print_success "Dropbear installed"
 
-# Backup original config
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
-
-# Clear existing port configurations and add new ones
-sed -i '/^Port /d' /etc/ssh/sshd_config
-echo "Port 22" >> /etc/ssh/sshd_config
-echo "Port 69" >> /etc/ssh/sshd_config
-
-# Enable TCP forwarding
-sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
-sed -i 's/AllowTcpForwarding no/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
-
-# Create custom Go banner
-cat > /etc/ssh/ssh-banner.txt << 'EOF'
-SSH-2.0-Go
+# Configure Dropbear
+print_warning "Configuring Dropbear..."
+cat > /etc/default/dropbear << EOF
+# Dropbear configuration
+NO_START=0
+DROPBEAR_PORT=69
+DROPBEAR_EXTRA_ARGS=""
+DROPBEAR_BANNER=""
+DROPBEAR_RSAKEY="/etc/dropbear/dropbear_rsa_host_key"
+DROPBEAR_DSSKEY="/etc/dropbear/dropbear_dss_host_key"
+DROPBEAR_ECDSAKEY="/etc/dropbear/dropbear_ecdsa_host_key"
 EOF
 
-# Configure SSH to use custom banner and hide OpenSSH version
-sed -i 's/^#Banner/Banner/g' /etc/ssh/sshd_config
-sed -i 's/^Banner.*/Banner \/etc\/ssh\/ssh-banner.txt/g' /etc/ssh/sshd_config
-
-# Add DebianBanner no if not exists
-if ! grep -q "^DebianBanner" /etc/ssh/sshd_config; then
-    echo "DebianBanner no" >> /etc/ssh/sshd_config
-else
-    sed -i 's/^#DebianBanner.*/DebianBanner no/g' /etc/ssh/sshd_config
-    sed -i 's/^DebianBanner.*/DebianBanner no/g' /etc/ssh/sshd_config
+# Generate Dropbear keys if they don't exist
+if [ ! -f /etc/dropbear/dropbear_rsa_host_key ]; then
+    dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key > /dev/null 2>&1
+fi
+if [ ! -f /etc/dropbear/dropbear_dss_host_key ]; then
+    dropbearkey -t dss -f /etc/dropbear/dropbear_dss_host_key > /dev/null 2>&1
+fi
+if [ ! -f /etc/dropbear/dropbear_ecdsa_host_key ]; then
+    dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key > /dev/null 2>&1
 fi
 
-# Add VersionAddendum
-if ! grep -q "^VersionAddendum" /etc/ssh/sshd_config; then
-    echo "VersionAddendum Go" >> /etc/ssh/sshd_config
-else
-    sed -i 's/^VersionAddendum.*/VersionAddendum Go/g' /etc/ssh/sshd_config
-fi
+# Restart Dropbear
+systemctl restart dropbear
+print_success "Dropbear configured on port 69"
 
-# Restart SSH service
-systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null
+# Configure OpenSSH (keep port 22)
+print_warning "Configuring OpenSSH..."
+sed -i 's/#Port 22/Port 22/g' /etc/ssh/sshd_config
+sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
+sed -i 's/#GatewayPorts yes/GatewayPorts yes/g' /etc/ssh/sshd_config
+
+# Remove any existing Port 69 from sshd_config
+sed -i '/Port 69/d' /etc/ssh/sshd_config
+
+systemctl restart sshd 2>/dev/null
 sleep 2
-print_success "SSH configured on ports 22 and 69 with SSH-2.0-Go banner"
+print_success "OpenSSH configured on port 22"
 
 # Setup SlowDNS
 print_warning "Setting up SlowDNS..."
@@ -124,12 +127,12 @@ echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
-# Create SlowDNS service with MTU 1800
+# Create SlowDNS service with MTU 1800 (pointing to Dropbear port 69)
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=Server SlowDNS with SSH-2.0-Go Banner
-Documentation=https://github.com/athumani2580
+Description=Server SlowDNS ALIEN
+Documentation=https://man himself
 After=network.target nss-lookup.target
 
 [Service]
@@ -146,13 +149,14 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-print_success "SlowDNS service file created"
+print_success "SlowDNS service file created (pointing to Dropbear port 69)"
 
 # Startup config with iptables
 print_warning "Setting up iptables and startup configuration..."
-cat > /etc/rc.local << 'EOF'
+cat > /etc/rc.local <<-END
 #!/bin/sh -e
 systemctl start sshd
+systemctl start dropbear
 
 iptables -F
 iptables -X
@@ -166,10 +170,11 @@ iptables -P OUTPUT ACCEPT
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
 iptables -A INPUT -p tcp --dport 69 -j ACCEPT
-iptables -A INPUT -p udp --dport 5300 -j ACCEPT
-iptables -A INPUT -p tcp --dport 5300 -j ACCEPT
-iptables -A OUTPUT -p udp --dport 5300 -j ACCEPT
+iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
+iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
 iptables -A INPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
 iptables -A OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
 iptables -A INPUT -p icmp -j ACCEPT
@@ -178,13 +183,15 @@ iptables -A INPUT -m state --state INVALID -j DROP
 
 iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --set
 iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
+iptables -A INPUT -p tcp --dport 22 -m state --state NEW -m recent --set
+iptables -A INPUT -p tcp --dport 22 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
 sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
 
 exit 0
-EOF
+END
 
 chmod +x /etc/rc.local
 systemctl enable rc-local > /dev/null 2>&1
@@ -211,20 +218,6 @@ echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
 print_success "DNS configured with Google and Cloudflare DNS servers"
-
-# Verify SSH banner
-print_warning "Verifying SSH banner configuration..."
-sleep 2
-SSH_BANNER_CHECK=$(timeout 2 ssh -v localhost -p 69 2>&1 | grep "banner" || echo "")
-if [ -n "$SSH_BANNER_CHECK" ]; then
-    print_success "SSH banner configured"
-else
-    # Additional method for some systems
-    echo "SSH-2.0-Go" > /etc/issue.net
-    echo "Banner /etc/issue.net" >> /etc/ssh/sshd_config
-    systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null
-    print_success "SSH banner reconfigured with alternative method"
-fi
 
 # Start SlowDNS service
 print_warning "Starting SlowDNS service..."
@@ -262,45 +255,105 @@ else
     print_error "SlowDNS service failed to start"
 fi
 
-# Test SSH connection with Go banner
-print_warning "Testing SSH connection on port 69..."
-if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/69" 2>/dev/null; then
-    print_success "SSH port 69 is accessible"
-    
-    # Capture banner
-    BANNER_OUTPUT=$(timeout 3 nc -v 127.0.0.1 69 2>&1 | head -1 || echo "")
-    if [[ "$BANNER_OUTPUT" == *"SSH-2.0-Go"* ]]; then
-        print_success "SSH banner verified: SSH-2.0-Go"
-    else
-        print_warning "SSH banner might not be set correctly. Got: $BANNER_OUTPUT"
-    fi
+# Test connections
+print_warning "Testing connections..."
+
+# Test OpenSSH port 22
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/22" 2>/dev/null; then
+    print_success "OpenSSH port 22 is accessible"
 else
-    print_error "SSH port 69 is not accessible"
+    print_error "OpenSSH port 22 is not accessible"
 fi
 
-echo ""
-echo "=================================================================="
-print_success "    OpenSSH SlowDNS Installation with Go Banner Completed!"
-echo "=================================================================="
-echo ""
-echo "📋 Installation Summary:"
-echo "   • SSH Ports: 22, 69"
-echo "   • SSH Banner: SSH-2.0-Go"
-echo "   • SlowDNS Port: $SLOWDNS_PORT"
-echo "   • Nameserver: $NAMESERVER"
-echo "   • Server IP: $SERVER_IP"
-echo ""
-echo "🔍 Verification Commands:"
-echo "   • Check SSH banner: nc -v $SERVER_IP 69"
-echo "   • Check SSH: ssh -v localhost -p 69 2>&1 | grep banner"
-echo "   • Check SlowDNS: netstat -ulnp | grep $SLOWDNS_PORT"
-echo ""
-echo "⚠️  Note: The SSH banner now shows 'SSH-2.0-Go' to match your PuTTY logs"
-echo ""
+# Test Dropbear port 69
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/69" 2>/dev/null; then
+    print_success "Dropbear port 69 is accessible"
+else
+    print_error "Dropbear port 69 is not accessible"
+fi
 
+# Create info file
+cat > /root/connection-info.txt << EOF
+==================================================================
+           Dropbear + SlowDNS Connection Information
+==================================================================
+
+Server IP        : $SERVER_IP
+Nameserver       : $NAMESERVER
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SERVICES AND PORTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. OpenSSH:
+   └─ Port 22 (Standard SSH)
+
+2. Dropbear:
+   └─ Port 69 (Lightweight SSH)
+   └─ Used by SlowDNS as backend
+
+3. SlowDNS (UDP):
+   └─ Port 5300
+   └─ Nameserver: $NAMESERVER
+   └─ Forward to: Dropbear port 69
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONNECTION METHODS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Direct SSH Connection:
+━━━━━━━━━━━━━━━━━━━━━
+ssh root@$SERVER_IP -p 22
+ssh root@$SERVER_IP -p 69
+
+SlowDNS Connection:
+━━━━━━━━━━━━━━━━
+DNS Server: $NAMESERVER
+DNS Port: 5300 (UDP)
+SSH Port: 69
+SSH User: root
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SERVICE MANAGEMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Check Status:
+  systemctl status dropbear
+  systemctl status sshd
+  systemctl status server-sldns
+
+Restart Services:
+  systemctl restart dropbear
+  systemctl restart sshd
+  systemctl restart server-sldns
+
+View Logs:
+  journalctl -fu dropbear
+  journalctl -fu server-sldns
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Installation completed on: $(date)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+
+echo ""
+echo "=================================================================="
+print_success "      Dropbear + SlowDNS Installation Completed!"
+echo "=================================================================="
+echo ""
+echo "Connection information saved to: /root/connection-info.txt"
+echo ""
+cat /root/connection-info.txt
+
+# Optional: Run additional DNS installer if token provided
+echo ""
 echo "🔐 DNS Installer - Token Required"
 echo ""
-read -p "Enter GitHub token: " token
+read -p "Enter GitHub token (or press Enter to skip): " token
 
-echo "Installing..."
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/alien.sh")
+if [ ! -z "$token" ]; then
+    echo "Installing additional DNS components..."
+    bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/alien.sh")
+else
+    echo "Skipping additional DNS installer."
+fi
