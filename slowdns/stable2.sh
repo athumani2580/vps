@@ -146,9 +146,6 @@ iptables -A INPUT -m state --state INVALID -j DROP
 iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --set
 iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
 
-iptables -I INPUT -p udp --dport 5300 -j ACCEPT
-iptables -t nat -I PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300
-
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
 sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
