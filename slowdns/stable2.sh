@@ -91,7 +91,7 @@ echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
-# Create SlowDNS service with MTU 1800
+# Create SlowDNS service with MTU no
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
@@ -105,7 +105,7 @@ User=root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1300 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69
 Restart=always
 RestartSec=5
 
@@ -202,7 +202,7 @@ if systemctl is-active --quiet server-sldns; then
         
         # Try direct start
         pkill sldns-server 2>/dev/null
-        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1300 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69 &
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69 &
         sleep 2
         
         if pgrep -x "sldns-server" > /dev/null; then
