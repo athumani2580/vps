@@ -118,34 +118,6 @@ print_success "SlowDNS service file created"
 # Startup config with iptables
 print_warning "Setting up iptables and startup configuration..."
 cat > /etc/rc.local <<-END
-#!/bin/sh -e
-systemctl start sshd
-
-iptables -F
-iptables -X
-iptables -t nat -F
-iptables -t nat -X
-
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
-iptables -P OUTPUT ACCEPT
-
-iptables -A INPUT -i lo -j ACCEPT
-iptables -A OUTPUT -o lo -j ACCEPT
-iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -A INPUT -p tcp --dport 69 -j ACCEPT
-iptables -A INPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A INPUT -p tcp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A OUTPUT -p udp --dport $SLOWDNS_PORT -j ACCEPT
-iptables -A INPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
-iptables -A OUTPUT -s 127.0.0.1 -d 127.0.0.1 -j ACCEPT
-iptables -A INPUT -p icmp -j ACCEPT
-iptables -A OUTPUT -j ACCEPT
-iptables -A INPUT -m state --state INVALID -j DROP
-
-iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --set
-iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 -j DROP
-
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
 sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
