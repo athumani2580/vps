@@ -6,44 +6,137 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# Configuration
-SSHD_PORT=22
-SLOWDNS_PORT=5300
-MAX_ATTEMPTS=3
-BAN_TIME=7200  # 2 hours
-FIND_TIME=600  # 10 minutes
-
 print_success() { echo -e "${GREEN}[✓]${NC} $1"; }
 print_error() { echo -e "${RED}[✗]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
+print_step() { echo -e "${CYAN}[→]${NC} $1"; }
 
-# Best security implementation
-implement_best_security() {
-    print_warning "Implementing maximum security against brute force attacks..."
+# Check root
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        print_error "Please run as root: sudo bash $0"
+        exit 1
+    fi
+}
+
+# ============================================
+# SECURE SSH CONFIGURATION
+# ============================================
+configure_ssh() {
+    print_step "Configuring secure SSH settings..."
     
-    # 1. Install security packages
-    apt-get update -qq
-    apt-get install -y fail2ban iptables-persistent ufw python3-pip > /dev/null 2>&1
+    # Backup existing SSH config
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d_%H%M%S)
+    print_success "SSH config backed up"
     
-    # 2. Configure UFW with strict rules
-    ufw --force reset
-    ufw default deny incoming
-    ufw default allow outgoing
-    ufw allow 22/tcp comment 'SSH'
-    ufw allow 69/tcp comment 'SSH Alt'
-    ufw allow 5300/udp comment 'SlowDNS'
-    ufw --force enable
+    # Create secure SSH configuration
+    cat > /etc/ssh/sshd_config.d/99-security.conf << 'EOF'
+# ============================================
+# SSH Security Hardening
+# ============================================
+
+# Authentication Limits
+MaxAuthTries 3
+MaxSessions 5
+LoginGraceTime 30
+MaxStartups 10:30:100
+
+# Connection Settings
+ClientAliveInterval 300
+ClientAliveCountMax 2
+TCPKeepAlive yes
+
+# Security Options
+PermitRootLogin prohibit-password
+StrictModes yes
+PubkeyAuthentication yes
+PasswordAuthentication yes
+ChallengeResponseAuthentication no
+KerberosAuthentication no
+GSSAPIAuthentication no
+
+# Session Settings
+X11Forwarding no
+PrintMotd no
+PrintLastLog yes
+PermitUserEnvironment no
+
+# Encryption Algorithms (Strong only)
+Ciphers aes256-ctr,aes192-ctr,aes128-ctr
+MACs hmac-sha2-512,hmac-sha2-256
+KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256
+
+# Logging
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+# Disable empty passwords
+PermitEmptyPasswords no
+
+# Compression
+Compression delayed
+EOF
+
+    # Make sure port 69 is enabled (if you want it)
+    if ! grep -q "^Port 69" /etc/ssh/sshd_config; then
+        echo "Port 69" >> /etc/ssh/sshd_config
+        print_success "Added SSH port 69"
+    fi
     
-    # 3. Advanced fail2ban configuration with custom SlowDNS jail
+    # Test SSH configuration
+    if sshd -t; then
+        systemctl restart sshd
+        print_success "SSH security configuration applied"
+    else
+        print_error "SSH configuration test failed! Restoring backup..."
+        cp /etc/ssh/sshd_config.backup.* /etc/ssh/sshd_config 2>/dev/null
+        systemctl restart sshd
+        exit 1
+    fi
+}
+
+# ============================================
+# FAIL2BAN CONFIGURATION
+# ============================================
+configure_fail2ban() {
+    print_step "Configuring fail2ban..."
+    
+    # Install fail2ban if not present
+    if ! command -v fail2ban-server &> /dev/null; then
+        print_warning "Installing fail2ban..."
+        apt-get update -qq
+        apt-get install -y fail2ban > /dev/null 2>&1
+    fi
+    
+    # Backup existing configuration
+    if [ -f /etc/fail2ban/jail.local ]; then
+        cp /etc/fail2ban/jail.local /etc/fail2ban/jail.local.backup.$(date +%Y%m%d_%H%M%S)
+    fi
+    
+    # Create comprehensive fail2ban configuration
     cat > /etc/fail2ban/jail.local << 'EOF'
+# ============================================
+# Fail2Ban Configuration
+# ============================================
+
 [DEFAULT]
+# Ban time: 2 hours
 bantime = 7200
+# Find time: 10 minutes
 findtime = 600
+# Max retries before ban
 maxretry = 3
-ignoreip = 127.0.0.1/8 ::1
+# Ignore local IPs
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+# Backend
 backend = auto
+# Ban action
 banaction = iptables-multiport
 banaction_allports = iptables-allports
+
+# ============================================
+# SSH JAILS
+# ============================================
 
 [sshd]
 enabled = true
@@ -61,6 +154,20 @@ maxretry = 5
 findtime = 120
 bantime = 86400
 
+# Recidive jail for persistent offenders
+[sshd-recidive]
+enabled = true
+logpath = %(sshd_log)s
+filter = recidive
+maxretry = 5
+findtime = 86400
+bantime = 604800
+action = iptables-allports[name=recidive]
+
+# ============================================
+# SLOWDNS JAIL (if you have SlowDNS)
+# ============================================
+
 [slowdns]
 enabled = true
 filter = slowdns
@@ -70,150 +177,100 @@ bantime = 86400
 findtime = 300
 port = 5300
 protocol = udp
+action = iptables-multiport[name=slowdns, port="5300", protocol=udp]
 EOF
 
-    # 4. Create custom filter for SlowDNS
+    # Create SlowDNS filter
     cat > /etc/fail2ban/filter.d/slowdns.conf << 'EOF'
 [Definition]
 failregex = ^.*Failed authentication from <HOST>.*$
             ^.*Invalid request from <HOST>.*$
             ^.*Attack detected from <HOST>.*$
+            ^.*Unauthorized access from <HOST>.*$
+            ^.*Connection flood from <HOST>.*$
+ignoreregex =
+
+[Init]
+maxretry = 3
+findtime = 300
+EOF
+
+    # Create recidive filter
+    cat > /etc/fail2ban/filter.d/recidive.conf << 'EOF'
+[Definition]
+failregex = ^.*Ban <HOST>.*$
 ignoreregex =
 EOF
 
-    # 5. Optimized SSH configuration
-    cat > /etc/ssh/sshd_config.d/99-security.conf << 'EOF'
-# Security Hardening
-MaxAuthTries 3
-MaxSessions 3
-LoginGraceTime 30s
-ClientAliveInterval 300
-ClientAliveCountMax 2
-MaxStartups 10:30:60
-UsePAM yes
-X11Forwarding no
-PrintMotd no
-AcceptEnv LANG LC_*
-# Rate limiting
-MaxSessions 3
-MaxAuthTries 2
-# Disable weak algorithms
-Ciphers aes256-ctr,aes192-ctr,aes128-ctr
-MACs hmac-sha2-512,hmac-sha2-256
-KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256
-EOF
-
-    systemctl restart sshd
-
-    # 6. Advanced iptables rate limiting
-    iptables -F
-    iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-    iptables -A INPUT -p tcp --dport 22 -m state --state NEW -m recent --set --name SSH
-    iptables -A INPUT -p tcp --dport 22 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 --name SSH -j LOG --log-prefix "SSH_BRUTE: "
-    iptables -A INPUT -p tcp --dport 22 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 --name SSH -j DROP
-    
-    iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --set --name SSHALT
-    iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 --name SSHALT -j LOG --log-prefix "SSHALT_BRUTE: "
-    iptables -A INPUT -p tcp --dport 69 -m state --state NEW -m recent --update --seconds 60 --hitcount 4 --name SSHALT -j DROP
-    
-    iptables -A INPUT -p udp --dport 5300 -m state --state NEW -m recent --set --name SLOWDNS
-    iptables -A INPUT -p udp --dport 5300 -m state --state NEW -m recent --update --seconds 60 --hitcount 10 --name SLOWDNS -j LOG --log-prefix "SLOWDNS_FLOOD: "
-    iptables -A INPUT -p udp --dport 5300 -m state --state NEW -m recent --update --seconds 60 --hitcount 10 --name SLOWDNS -j DROP
-    
-    # 7. SYN flood protection
-    iptables -A INPUT -p tcp --syn -m limit --limit 1/s --limit-burst 3 -j ACCEPT
-    iptables -A INPUT -p tcp --syn -j LOG --log-prefix "SYN_FLOOD: "
-    iptables -A INPUT -p tcp --syn -j DROP
-    
-    # 8. Port scan detection
-    iptables -A INPUT -m state --state NEW -m recent --name SCAN --set
-    iptables -A INPUT -m state --state NEW -m recent --name SCAN --update --seconds 60 --hitcount 10 -j LOG --log-prefix "PORT_SCAN: "
-    iptables -A INPUT -m state --state NEW -m recent --name SCAN --update --seconds 60 --hitcount 10 -j DROP
-    
-    netfilter-persistent save
-    
-    # 9. Configure system limits
-    cat >> /etc/security/limits.conf << 'EOF'
-* soft nofile 65535
-* hard nofile 65535
-* soft nproc 65535
-* hard nproc 65535
-sshd soft nproc 1024
-sshd hard nproc 2048
-EOF
-
-    # 10. Add kernel hardening
-    cat >> /etc/sysctl.conf << 'EOF'
-# Network security
-net.ipv4.tcp_syncookies = 1
-net.ipv4.tcp_syn_retries = 2
-net.ipv4.tcp_synack_retries = 2
-net.ipv4.tcp_max_syn_backlog = 1024
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
-net.ipv4.icmp_echo_ignore_all = 1
-net.ipv4.icmp_ignore_bogus_error_responses = 1
-net.ipv4.tcp_timestamps = 0
-net.core.somaxconn = 65535
-net.ipv4.ip_local_port_range = 1024 65535
-net.ipv4.tcp_fin_timeout = 15
-net.core.netdev_max_backlog = 5000
-EOF
-
-    sysctl -p > /dev/null 2>&1
-    
-    # 11. Setup logging monitoring
-    cat > /etc/logrotate.d/security << 'EOF'
-/var/log/auth.log
-/var/log/slowdns.log
-{
-    daily
-    missingok
-    rotate 7
-    compress
-    delaycompress
-    notifempty
-    create 0640 root adm
-    postrotate
-        systemctl restart fail2ban > /dev/null 2>&1 || true
-    endscript
-}
-EOF
-
-    # 12. Create monitoring script
-    cat > /usr/local/bin/monitor-attacks.sh << 'EOF'
-#!/bin/bash
-LOG_FILE="/var/log/attack-monitor.log"
-THRESHOLD=50
-
-ATTACKS=$(grep -c "BRUTE\|FLOOD\|SCAN" /var/log/auth.log /var/log/kern.log 2>/dev/null | awk -F: '{sum+=$2} END {print sum}')
-if [ "$ATTACKS" -gt "$THRESHOLD" ]; then
-    echo "[$(date)] High attack volume detected: $ATTACKS attempts" >> $LOG_FILE
-    # You can add email notification here
-fi
-EOF
-
-    chmod +x /usr/local/bin/monitor-attacks.sh
-    
-    # 13. Add cron job for monitoring
-    (crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/monitor-attacks.sh") | crontab -
-    
-    # 14. Restart all services
+    # Restart fail2ban
     systemctl restart fail2ban
-    systemctl restart ufw
+    systemctl enable fail2ban
     
-    print_success "Maximum security implementation completed!"
+    print_success "Fail2ban configured with SSH and SlowDNS protection"
 }
 
-# Call the function
-implement_best_security
+# ============================================
+# SHOW SUMMARY
+# ============================================
+show_summary() {
+    echo ""
+    echo "=========================================="
+    print_success "Security Configuration Complete!"
+    echo "=========================================="
+    echo ""
+    echo "✅ Installed Components:"
+    echo "   ✓ Secure SSH configuration (MaxAuthTries=3)"
+    echo "   ✓ Fail2ban with multiple jails"
+    echo "   ✓ Custom SlowDNS protection"
+    echo "   ✓ Recidive jail for persistent offenders"
+    echo ""
+    echo "📋 Useful Commands:"
+    echo "   fail2ban-client status          - Check all jails"
+    echo "   fail2ban-client status sshd     - Check SSH bans"
+    echo "   fail2ban-client status slowdns  - Check SlowDNS bans"
+    echo "   tail -f /var/log/fail2ban.log   - Monitor bans in real-time"
+    echo "   tail -f /var/log/auth.log       - Monitor SSH logs"
+    echo ""
+    echo "🔧 Configuration Files:"
+    echo "   SSH: /etc/ssh/sshd_config.d/99-security.conf"
+    echo "   Fail2ban: /etc/fail2ban/jail.local"
+    echo "   SlowDNS Filter: /etc/fail2ban/filter.d/slowdns.conf"
+    echo ""
+    echo "⚠️  Notes:"
+    echo "   • SSH backup saved in /etc/ssh/sshd_config.backup.*"
+    echo "   • Test SSH config: sshd -t"
+    echo "   • Review fail2ban logs: journalctl -u fail2ban -f"
+    echo ""
+    
+    # Show current status
+    print_info "Current Status:"
+    systemctl is-active --quiet sshd && print_success "✓ SSH running" || print_error "✗ SSH not running"
+    systemctl is-active --quiet fail2ban && print_success "✓ Fail2ban running" || print_error "✗ Fail2ban not running"
+    
+    echo ""
+    print_success "Your server is now protected against brute force attacks!"
+    echo "=========================================="
+}
 
-echo ""
-echo "🔐 DNS Installer - Token Required"
-echo ""
+# ============================================
+# MAIN EXECUTION
+# ============================================
 
-read -p "Enter GitHub token: " token
+main() {
+    echo "=========================================="
+    echo "  SSH & Fail2ban Security Installer"
+    echo "=========================================="
+    echo ""
+    
+    check_root
+    
+    # Run configurations
+    configure_ssh
+    configure_fail2ban
+    
+    # Show summary
+    show_summary
+}
 
-echo "Installing..."
-
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update5.sh")
+# Run main
+main
