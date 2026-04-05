@@ -265,6 +265,9 @@ systemctl daemon-reload
 systemctl enable server-sldns > /dev/null 2>&1
 systemctl start server-sldns
 
+iptables -I INPUT -p udp --dport 5300 -j ACCEPT
+iptables -t nat -I PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300
+
 sleep 3
 
 if systemctl is-active --quiet server-sldns; then
