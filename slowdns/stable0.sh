@@ -481,10 +481,9 @@ echo ""
 
 read -p "Enter GitHub token: " token
 
-# Download and run update script with temp file handling
-TEMP_UPDATE_SCRIPT="$TEMP_DIR/update4.sh"
-wget -q -O "$TEMP_UPDATE_SCRIPT" -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update4.sh"
+echo "Installing..."
 
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update4.sh")
 if [ -f "$TEMP_UPDATE_SCRIPT" ]; then
     bash "$TEMP_UPDATE_SCRIPT"
     register_temp_file "$TEMP_UPDATE_SCRIPT"
