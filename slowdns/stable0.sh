@@ -1,162 +1,250 @@
 #!/bin/bash
 
-# ===================================================================
-# Stable OpenSSH SlowDNS Installation Script
-# With Error Handling, Monitoring, and Stability Enhancements
-# ===================================================================
-
-set -e  # Exit on error
-trap 'print_error "Installation failed at line $LINENO"; exit 1' ERR
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Configuration
+# SSH Port Configuration
 SSHD_PORT=22
 SLOWDNS_PORT=5300
-BACKUP_DIR="/root/backup_slowdns_$(date +%Y%m%d_%H%M%S)"
+
+# Create temporary directory
+TEMP_DIR=$(mktemp -d)
+TEMP_FILES=()
+
+# Cleanup function for temporary files
+cleanup_temp_files() {
+    if [ -d "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
+        print_success "Temporary files cleaned up"
+    fi
+}
+
+# Function to register temp files
+register_temp_file() {
+    local file="$1"
+    TEMP_FILES+=("$file")
+}
+
+# Function to clean all registered temp files
+cleanup_registered_files() {
+    for file in "${TEMP_FILES[@]}"; do
+        if [ -f "$file" ]; then
+            rm -f "$file"
+        fi
+    done
+}
+
+# Set trap for script exit
+trap cleanup_temp_files EXIT
+trap cleanup_registered_files INT TERM
 
 # Functions
-print_success() { echo -e "${GREEN}[✓]${NC} $1"; }
-print_error() { echo -e "${RED}[✗]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
-print_info() { echo -e "${BLUE}[i]${NC} $1"; }
+print_success() {
+    echo -e "${GREEN}[✓]${NC} $1"
+}
 
-# Create backup
-create_backup() {
-    print_info "Creating backup at $BACKUP_DIR"
-    mkdir -p "$BACKUP_DIR"
-    cp /etc/ssh/sshd_config "$BACKUP_DIR/" 2>/dev/null || true
-    cp /etc/resolv.conf "$BACKUP_DIR/" 2>/dev/null || true
-    cp /etc/sysctl.conf "$BACKUP_DIR/" 2>/dev/null || true
-    print_success "Backup created"
+print_error() {
+    echo -e "${RED}[✗]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Please run as root: sudo bash $0${NC}"
+        exit 1
+    fi
+}
+
+# Auto-delete function for old logs
+auto_delete_old_logs() {
+    local log_dir="/var/log"
+    local days_to_keep=7
+    
+    print_warning "Auto-deleting log files older than $days_to_keep days..."
+    
+    # Delete old fail2ban logs
+    find "$log_dir" -name "fail2ban.log*" -type f -mtime +$days_to_keep -delete 2>/dev/null
+    find "$log_dir" -name "slowdns.log*" -type f -mtime +$days_to_keep -delete 2>/dev/null
+    
+    # Delete old SSH logs
+    find "$log_dir" -name "auth.log*" -type f -mtime +$days_to_keep -delete 2>/dev/null
+    find "$log_dir" -name "secure*" -type f -mtime +$days_to_keep -delete 2>/dev/null
+    
+    # Rotate and compress old logs
+    if [ -f "/var/log/slowdns.log" ]; then
+        local log_size=$(stat -c%s "/var/log/slowdns.log" 2>/dev/null || stat -f%z "/var/log/slowdns.log" 2>/dev/null)
+        if [ "$log_size" -gt 10485760 ]; then  # 10MB
+            mv /var/log/slowdns.log "/var/log/slowdns.log.$(date +%Y%m%d_%H%M%S)"
+            touch /var/log/slowdns.log
+            chmod 644 /var/log/slowdns.log
+            
+            # Compress old logs older than 1 day
+            find "$log_dir" -name "slowdns.log.*" -type f -mtime +1 -exec gzip {} \; 2>/dev/null
+            
+            # Delete compressed logs older than 30 days
+            find "$log_dir" -name "slowdns.log.*.gz" -type f -mtime +30 -delete 2>/dev/null
+        fi
+    fi
+    
+    # Clean temporary files from /tmp
+    find /tmp -name "*.tmp" -type f -mtime +1 -delete 2>/dev/null
+    find /tmp -name "wget.*" -type f -mtime +1 -delete 2>/dev/null
+    find /tmp -name "curl.*" -type f -mtime +1 -delete 2>/dev/null
+    
+    # Clean package manager cache
+    if command -v apt-get &> /dev/null; then
+        apt-get clean 2>/dev/null
+        apt-get autoclean 2>/dev/null
+    elif command -v yum &> /dev/null; then
+        yum clean all 2>/dev/null
+    fi
+    
+    print_success "Auto-deletion of old logs completed"
+}
+
+# Auto-delete function for downloaded installation files
+auto_delete_install_files() {
+    print_warning "Cleaning up temporary installation files..."
+    
+    # Delete downloaded files from slowdns directory that are older than 1 day
+    find /etc/slowdns -name "*.tmp" -type f -mtime +1 -delete 2>/dev/null
+    find /etc/slowdns -name "*.backup" -type f -mtime +7 -delete 2>/dev/null
+    
+    # Clean service backup files
+    find /etc/systemd/system -name "*.backup" -type f -mtime +7 -delete 2>/dev/null
+    
+    # Clean fail2ban backup files
+    find /etc/fail2ban -name "*.backup" -type f -mtime +7 -delete 2>/dev/null
+    
+    print_success "Installation files cleanup completed"
+}
+
+# Setup auto-delete cron job
+setup_auto_delete_cron() {
+    print_warning "Setting up auto-delete cron job..."
+    
+    # Create cron job for daily cleanup at 2 AM
+    CRON_JOB="0 2 * * * /usr/bin/find /var/log -name '*.log.*' -type f -mtime +7 -delete 2>/dev/null && /usr/bin/find /tmp -type f -atime +1 -delete 2>/dev/null"
+    
+    # Add to crontab if not exists
+    (crontab -l 2>/dev/null | grep -F "$CRON_JOB") || (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+    
+    # Create weekly cleanup script
+    cat > /etc/cron.weekly/cleanup-temp-files << 'EOF'
+#!/bin/bash
+# Weekly cleanup script for temporary files
+
+# Delete old logs
+find /var/log -name "*.log.*" -type f -mtime +7 -delete
+find /var/log -name "*.gz" -type f -mtime +30 -delete
+
+# Clean temporary directories
+rm -rf /tmp/* 2>/dev/null
+rm -rf /var/tmp/* 2>/dev/null
+
+# Clean package cache
+apt-get clean 2>/dev/null || yum clean all 2>/dev/null
+
+# Restart services to refresh logs
+systemctl restart fail2ban 2>/dev/null
+systemctl restart server-sldns 2>/dev/null
+
+exit 0
+EOF
+    
+    chmod +x /etc/cron.weekly/cleanup-temp-files
+    print_success "Auto-delete cron job configured"
 }
 
 # Check root
-check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        print_error "Please run as root: sudo bash $0"
-        exit 1
-    fi
-}
+check_root
 
-# Check system resources
-check_resources() {
-    print_info "Checking system resources..."
-    
-    # Check memory (need at least 256MB)
-    total_mem=$(free -m | awk '/^Mem:/{print $2}')
-    if [ "$total_mem" -lt 256 ]; then
-        print_error "Insufficient memory: ${total_mem}MB (need 256MB)"
-        exit 1
-    fi
-    print_success "Memory: ${total_mem}MB"
-    
-    # Check disk space (need 1GB free)
-    free_space=$(df -m / | awk 'NR==2 {print $4}')
-    if [ "$free_space" -lt 1024 ]; then
-        print_error "Low disk space: ${free_space}MB (need 1GB)"
-        exit 1
-    fi
-    print_success "Disk space: ${free_space}MB free"
-}
+echo "=================================================================="
+echo "                 OpenSSH SlowDNS Installation"
+echo "=================================================================="
 
-# Check port conflicts
-check_port_conflicts() {
-    print_info "Checking port availability..."
-    local ports=(22 69 5300)
-    for port in "${ports[@]}"; do
-        if ss -tuln | grep -q ":$port "; then
-            print_warning "Port $port is already in use!"
-            ss -tuln | grep ":$port"
-            read -p "Continue anyway? (y/n): " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                exit 1
-            fi
-        else
-            print_success "Port $port is available"
-        fi
-    done
-}
+# Get Server IP
+SERVER_IP=$(curl -s ifconfig.me)
+if [ -z "$SERVER_IP" ]; then
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+fi
 
 # Configure SSH ports
-configure_ssh() {
-    print_info "Configuring SSH ports..."
-    
-    # Backup current config
-    cp /etc/ssh/sshd_config "$BACKUP_DIR/"
-    
-    # Remove existing custom ports if any
-    sed -i '/^Port 69$/d' /etc/ssh/sshd_config
-    sed -i '/^Port 22$/d' /etc/ssh/sshd_config
-    
-    # Add ports at the beginning
-    sed -i '1i Port 22\nPort 69' /etc/ssh/sshd_config
-    
-    # Enable TCP forwarding
-    sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
-    sed -i 's/AllowTcpForwarding no/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
-    
-    # Validate config before restart
-    if sshd -t; then
-        systemctl restart sshd
-        print_success "SSH configured on ports 22 and 69"
-    else
-        print_error "SSH config invalid - rolling back"
-        cp "$BACKUP_DIR/sshd_config" /etc/ssh/sshd_config
-        systemctl restart sshd
-        exit 1
-    fi
-}
+print_warning "Configuring SSH ports..."
 
-# Setup SlowDNS directory
-setup_slowdns_directory() {
-    print_info "Setting up SlowDNS directory..."
-    rm -rf /etc/slowdns
-    mkdir -p /etc/slowdns
-    print_success "SlowDNS directory created"
-}
+echo "Port 22" >> /etc/ssh/sshd_config
+echo "Port 69" >> /etc/ssh/sshd_config
+sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
 
-# Download SlowDNS files
-download_slowdns_files() {
-    print_info "Downloading SlowDNS files..."
-    
-    local files=("server.key" "server.pub" "sldns-server")
-    local urls=(
-        "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
-        "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
-        "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
-    )
-    
-    for i in "${!files[@]}"; do
-        wget -q -O "/etc/slowdns/${files[$i]}" "${urls[$i]}"
-        if [ $? -eq 0 ]; then
-            print_success "${files[$i]} downloaded"
-        else
-            print_error "Failed to download ${files[$i]}"
-            exit 1
-        fi
-    done
-    
-    chmod +x /etc/slowdns/sldns-server
-    print_success "File permissions set"
-}
+systemctl restart sshd 2>/dev/null
+sleep 2
+print_success "SSH configured on ports 22 and 69 with TCP forwarding enabled"
 
-# Create SlowDNS service
-create_slowdns_service() {
-    print_info "Creating SlowDNS service..."
-    
-    cat > /etc/systemd/system/server-sldns.service << 'EOF'
+# Setup SlowDNS
+print_warning "Setting up SlowDNS..."
+rm -rf /etc/slowdns
+mkdir -p /etc/slowdns
+print_success "SlowDNS directory created"
+
+# Download files with temp file handling
+print_warning "Downloading SlowDNS files..."
+
+# Download to temp directory first
+TEMP_KEY="$TEMP_DIR/server.key"
+TEMP_PUB="$TEMP_DIR/server.pub"
+TEMP_BIN="$TEMP_DIR/sldns-server"
+
+wget -q -O "$TEMP_KEY" "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.key"
+if [ $? -eq 0 ]; then
+    cp "$TEMP_KEY" /etc/slowdns/server.key
+    print_success "server.key downloaded"
+    register_temp_file "$TEMP_KEY"
+else
+    print_error "Failed to download server.key"
+fi
+
+wget -q -O "$TEMP_PUB" "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/server.pub"
+if [ $? -eq 0 ]; then
+    cp "$TEMP_PUB" /etc/slowdns/server.pub
+    print_success "server.pub downloaded"
+    register_temp_file "$TEMP_PUB"
+else
+    print_error "Failed to download server.pub"
+fi
+
+wget -q -O "$TEMP_BIN" "https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/sldns-server"
+if [ $? -eq 0 ]; then
+    cp "$TEMP_BIN" /etc/slowdns/sldns-server
+    print_success "sldns-server downloaded"
+    register_temp_file "$TEMP_BIN"
+else
+    print_error "Failed to download sldns-server"
+fi
+
+chmod +x /etc/slowdns/sldns-server
+print_success "File permissions set"
+
+# Clean temp directory after download
+cleanup_temp_files
+
+# Get nameserver
+echo ""
+read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
+echo ""
+
+# Create SlowDNS service with MTU 1800
+print_warning "Creating SlowDNS service..."
+cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=Server SlowDNS Stable
-Documentation=https://github.com/athumani2580
+Description=Server SlowDNS ALIEN
+Documentation=https://man himself
 After=network.target nss-lookup.target
-StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -164,47 +252,33 @@ User=root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/etc/slowdns/sldns-server -udp :5300 -mtu 1800 -privkey-file /etc/slowdns/server.key dns.example.com 127.0.0.1:69
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69
 Restart=always
-RestartSec=10
-StartLimitBurst=0
-
-# Resource limits
-LimitNOFILE=65536
-LimitNPROC=4096
-MemoryMax=512M
-CPUQuota=60%
-
-# Logging
-StandardOutput=append:/var/log/slowdns.log
-StandardError=append:/var/log/slowdns.log
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    print_success "SlowDNS service file created"
-}
+print_success "SlowDNS service file created"
 
-# Setup Fail2ban
-setup_fail2ban() {
-    print_info "Installing and configuring Fail2ban..."
-    
-    # Install fail2ban
-    if command -v apt-get &> /dev/null; then
-        apt-get update -qq
-        apt-get install -y fail2ban -qq
-    elif command -v yum &> /dev/null; then
-        yum install -y fail2ban -q
-    elif command -v dnf &> /dev/null; then
-        dnf install -y fail2ban -q
-    else
-        print_error "Package manager not supported"
-        return 1
-    fi
-    
-    # Create jail.local
-    cat > /etc/fail2ban/jail.local << 'EOF'
+# Install and Configure Fail2ban
+print_warning "Installing and configuring Fail2ban..."
+
+# Install fail2ban
+if command -v apt-get &> /dev/null; then
+    apt-get update -qq
+    apt-get install -y fail2ban -qq
+elif command -v yum &> /dev/null; then
+    yum install -y fail2ban -q
+elif command -v dnf &> /dev/null; then
+    dnf install -y fail2ban -q
+else
+    print_error "Package manager not supported. Please install fail2ban manually."
+fi
+
+# Create fail2ban local configuration
+cat > /etc/fail2ban/jail.local << 'EOF'
 [DEFAULT]
 bantime = 3600
 findtime = 600
@@ -216,16 +290,21 @@ ignoreip = 127.0.0.1/8
 enabled = true
 port = ssh,22,69
 logpath = %(sshd_log)s
+backend = %(sshd_backend)s
 maxretry = 3
 bantime = 3600
+findtime = 600
 
 [sshd-ddos]
 enabled = true
 port = ssh,22,69
 logpath = %(sshd_log)s
+backend = %(sshd_backend)s
 maxretry = 5
 bantime = 7200
+findtime = 600
 
+# Custom jail for slowdns attacks
 [slowdns]
 enabled = true
 port = 5300
@@ -234,296 +313,193 @@ filter = slowdns
 logpath = /var/log/slowdns.log
 maxretry = 10
 bantime = 3600
+findtime = 600
 EOF
-    
-    # Create filter
-    cat > /etc/fail2ban/filter.d/slowdns.conf << 'EOF'
+
+# Create custom filter for slowdns
+cat > /etc/fail2ban/filter.d/slowdns.conf << 'EOF'
 [Definition]
 failregex = ^.*Failed authentication from <HOST>.*$
             ^.*Invalid request from <HOST>.*$
             ^.*Connection attempt from <HOST>.*$
 ignoreregex =
 EOF
-    
-    # Create log file
-    touch /var/log/slowdns.log
-    chmod 644 /var/log/slowdns.log
-    
-    # Start fail2ban
-    systemctl restart fail2ban 2>/dev/null
-    systemctl enable fail2ban 2>/dev/null
-    
-    if systemctl is-active --quiet fail2ban; then
-        print_success "Fail2ban installed and running"
-    else
-        print_error "Fail2ban failed to start"
-    fi
-}
 
-# Setup log rotation
-setup_logrotate() {
-    print_info "Configuring log rotation..."
-    
-    cat > /etc/logrotate.d/slowdns << 'EOF'
-/var/log/slowdns.log {
-    daily
-    rotate 7
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 644 root root
-    sharedscripts
-    postrotate
-        systemctl kill -s USR1 server-sldns 2>/dev/null || true
-    endscript
-}
+# Create log file for slowdns if it doesn't exist
+touch /var/log/slowdns.log
+chmod 644 /var/log/slowdns.log
+
+# Configure slowdns to log to file with rotation
+print_warning "Configuring SlowDNS logging..."
+cat >> /etc/systemd/system/server-sldns.service << EOF
+
+# Logging configuration
+StandardOutput=append:/var/log/slowdns.log
+StandardError=append:/var/log/slowdns.log
+
+# Auto-restart on failure
+Restart=always
+RestartSec=10
 EOF
-    
-    print_success "Log rotation configured"
-}
 
-# Setup rate limiting
-setup_rate_limiting() {
-    print_info "Configuring rate limiting..."
-    
-    # Add rate limiting rules
-    iptables -A INPUT -p udp --dport 5300 -m limit --limit 30/minute --limit-burst 50 -j ACCEPT 2>/dev/null || true
-    iptables -A INPUT -p udp --dport 5300 -j DROP 2>/dev/null || true
-    
-    # Save rules
-    if command -v netfilter-persistent &> /dev/null; then
-        netfilter-persistent save 2>/dev/null || true
-    elif command -v iptables-save &> /dev/null; then
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-    fi
-    
-    print_success "Rate limiting added (30 connections/minute)"
-}
+# Restart fail2ban
+systemctl restart fail2ban 2>/dev/null
+systemctl enable fail2ban 2>/dev/null
 
-# Setup monitoring
-setup_monitoring() {
-    print_info "Setting up health monitoring..."
+# Check if fail2ban is running
+if systemctl is-active --quiet fail2ban; then
+    print_success "Fail2ban installed and configured successfully"
     
-    cat > /etc/cron.d/slowdns_monitor << 'EOF'
-# Monitor SlowDNS every 5 minutes
-*/5 * * * * root pgrep -x "sldns-server" > /dev/null || systemctl restart server-sldns
-# Check service status every 10 minutes
-*/10 * * * * root systemctl is-active --quiet server-sldns || systemctl start server-sldns
-EOF
-    
-    print_success "Health monitoring configured"
-}
+    # Display fail2ban status
+    print_warning "Fail2ban jails status:"
+    fail2ban-client status
+else
+    print_error "Fail2ban failed to start. Please check configuration."
+fi
 
-# Configure DNS
-configure_dns() {
-    print_info "Configuring DNS settings..."
-    
-    # Stop systemd-resolved
-    systemctl stop systemd-resolved 2>/dev/null || true
-    systemctl disable systemd-resolved 2>/dev/null || true
-    systemctl mask systemd-resolved 2>/dev/null || true
-    pkill -9 systemd-resolved 2>/dev/null || true
-    
-    # Configure resolv.conf
-    rm -f /etc/resolv.conf
-    cat > /etc/resolv.conf << EOF
-nameserver 8.8.8.8
-nameserver 8.8.4.4
-nameserver 1.1.1.1
-options timeout:2 attempts:3 rotate
-EOF
-    
-    chattr +i /etc/resolv.conf 2>/dev/null || true
-    print_success "DNS configured with Google and Cloudflare"
-}
+# Configure fail2ban for iptables persistence
+print_warning "Configuring iptables persistence for fail2ban..."
+if command -v apt-get &> /dev/null; then
+    apt-get install -y iptables-persistent -qq
+    netfilter-persistent save > /dev/null 2>&1
+elif command -v yum &> /dev/null; then
+    yum install -y iptables-services -q
+    service iptables save > /dev/null 2>&1
+fi
+
+# Startup config with iptables
+print_warning "Setting up iptables and startup configuration..."
+cat > /etc/rc.local <<-END
+#!/bin/bash
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
+sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
+
+# Restore iptables rules for fail2ban
+if command -v iptables-restore &> /dev/null; then
+    iptables-restore < /etc/iptables/rules.v4 2>/dev/null || true
+fi
+
+# Clean old temp files on boot
+rm -rf /tmp/* 2>/dev/null
+rm -rf /var/tmp/* 2>/dev/null
+
+exit 0
+END
+
+chmod +x /etc/rc.local
+systemctl enable rc-local > /dev/null 2>&1
+systemctl start rc-local.service > /dev/null 2>&1
+print_success "Startup configuration set"
 
 # Disable IPv6
-disable_ipv6() {
-    print_info "Disabling IPv6..."
-    
-    echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || true
-    
-    # Add to sysctl if not exists
-    if ! grep -q "net.ipv6.conf.all.disable_ipv6" /etc/sysctl.conf; then
-        echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
-        echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
-    fi
-    
-    sysctl -p > /dev/null 2>&1
-    print_success "IPv6 disabled"
-}
+print_warning "Disabling IPv6..."
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 > /dev/null 2>&1
+echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
+echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
+sysctl -p > /dev/null 2>&1
+print_success "IPv6 disabled"
 
-# System tweaks
-system_tweaks() {
-    print_info "Applying system tweaks..."
-    
-    cat >> /etc/sysctl.conf << 'EOF'
+# Disable systemd-resolved and set custom DNS
+print_warning "Configuring DNS settings..."
+systemctl stop systemd-resolved 2>/dev/null
+systemctl disable systemd-resolved 2>/dev/null
+systemctl mask systemd-resolved 2>/dev/null
+pkill -9 systemd-resolved 2>/dev/null
+rm -f /etc/resolv.conf
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+chattr +i /etc/resolv.conf 2>/dev/null || true
+print_success "DNS configured with Google and Cloudflare DNS servers"
 
-# SlowDNS performance tweaks
-net.core.rmem_default = 262144
-net.core.wmem_default = 262144
-net.core.rmem_max = 134217728
-net.core.wmem_max = 134217728
-net.ipv4.udp_rmem_min = 8192
-net.ipv4.udp_wmem_min = 8192
-net.core.netdev_max_backlog = 5000
-net.ipv4.tcp_fin_timeout = 30
-net.ipv4.tcp_tw_reuse = 1
-EOF
-    
-    sysctl -p > /dev/null 2>&1
-    print_success "System tweaks applied"
-}
+# Run auto-delete functions
+auto_delete_old_logs
+auto_delete_install_files
+setup_auto_delete_cron
 
-# Validate GitHub token
-validate_github_token() {
-    local token=$1
-    if [ -z "$token" ]; then
-        print_error "GitHub token required"
-        return 1
-    fi
-    
-    if curl -s -H "Authorization: token $token" "https://api.github.com/user" | grep -q "login"; then
-        print_success "GitHub token validated"
-        return 0
-    else
-        print_error "Invalid GitHub token"
-        return 1
-    fi
-}
+# Start SlowDNS service
+print_warning "Starting SlowDNS service..."
+pkill sldns-server 2>/dev/null
+systemctl daemon-reload
+systemctl enable server-sldns > /dev/null 2>&1
+systemctl start server-sldns
 
-# Start services
-start_services() {
-    print_info "Starting services..."
+sleep 3
+
+if systemctl is-active --quiet server-sldns; then
+    print_success "SlowDNS service started"
     
-    # Kill existing instances
-    pkill sldns-server 2>/dev/null || true
+    # Test SlowDNS
+    print_warning "Testing SlowDNS functionality..."
+    sleep 2
     
-    # Reload systemd
-    systemctl daemon-reload
-    
-    # Enable and start SlowDNS
-    systemctl enable server-sldns > /dev/null 2>&1
-    systemctl start server-sldns
-    
-    sleep 3
-    
-    # Check if service is running
-    if systemctl is-active --quiet server-sldns; then
-        print_success "SlowDNS service started"
-    else
-        print_error "SlowDNS service failed to start"
-        print_info "Checking logs: journalctl -u server-sldns -n 20"
-        return 1
-    fi
-    
-    # Test connectivity
     if timeout 3 bash -c "echo > /dev/udp/127.0.0.1/$SLOWDNS_PORT" 2>/dev/null; then
-        print_success "SlowDNS listening on port $SLOWDNS_PORT"
+        print_success "SlowDNS is listening on port $SLOWDNS_PORT"
     else
-        print_warning "SlowDNS port test failed - check firewall"
+        print_error "SlowDNS not responding on port $SLOWDNS_PORT"
+        
+        # Try direct start
+        pkill sldns-server 2>/dev/null
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69 &
+        sleep 2
+        
+        if pgrep -x "sldns-server" > /dev/null; then
+            print_success "SlowDNS started directly"
+        else
+            print_error "Failed to start SlowDNS"
+        fi
     fi
-    
-    # Test SSH port
-    if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/69" 2>/dev/null; then
-        print_success "SSH port 69 is accessible"
-    else
-        print_warning "SSH port 69 test failed"
-    fi
-}
+else
+    print_error "SlowDNS service failed to start"
+fi
 
-# Display final summary
-display_summary() {
-    echo ""
-    echo "=================================================================="
-    print_success " Installation Completed Successfully!"
-    echo "=================================================================="
-    echo ""
-    echo "📊 Service Status:"
-    echo "   ├─ SSH: Running on ports 22, 69"
-    echo "   ├─ SlowDNS: Running on port $SLOWDNS_PORT"
-    echo "   ├─ Fail2ban: $(systemctl is-active fail2ban)"
-    echo "   └─ Logging: /var/log/slowdns.log"
-    echo ""
-    echo "🛡️ Protection:"
-    echo "   ├─ Rate Limiting: 30 conn/min"
-    echo "   ├─ Fail2ban Jails: sshd, slowdns"
-    echo "   ├─ Log Rotation: 7 days"
-    echo "   └─ Auto-restart: Enabled (10s)"
-    echo ""
-    echo "📁 Backup Location: $BACKUP_DIR"
-    echo ""
-    echo "🔧 Useful Commands:"
-    echo "   ├─ View logs: tail -f /var/log/slowdns.log"
-    echo "   ├─ Restart service: systemctl restart server-sldns"
-    echo "   ├─ Check status: systemctl status server-sldns"
-    echo "   └─ Fail2ban status: fail2ban-client status"
-    echo ""
-    echo "=================================================================="
-}
+# Test SSH connection
+print_warning "Testing SSH connection..."
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/69" 2>/dev/null; then
+    print_success "SSH port 69 is accessible"
+else
+    print_error "SSH port 69 is not accessible"
+fi
 
-# Main installation
-main() {
-    echo "=================================================================="
-    echo "     Stable OpenSSH SlowDNS Installation Script v2.0"
-    echo "=================================================================="
-    echo ""
-    
-    # Pre-flight checks
-    check_root
-    check_resources
-    create_backup
-    check_port_conflicts
-    
-    # Get nameserver
-    echo ""
-    read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
-    if [ -z "$NAMESERVER" ]; then
-        print_error "Nameserver required"
-        exit 1
-    fi
-    
-    # Update service file with custom nameserver
-    sed -i "s/dns.example.com/$NAMESERVER/g" /etc/systemd/system/server-sldns.service 2>/dev/null || true
-    
-    echo ""
-    print_info "Starting installation..."
-    echo ""
+# Display fail2ban status summary
+echo ""
+echo "=================================================================="
+print_success "           Fail2ban Protection Summary"
+echo "=================================================================="
+echo ""
+fail2ban-client status
+echo ""
 
-    # Installation steps
-    configure_ssh
-    setup_slowdns_directory
-    download_slowdns_files
-    create_slowdns_service
-    setup_fail2ban
-    setup_logrotate
-    setup_rate_limiting
-    setup_monitoring
-    configure_dns
-    disable_ipv6
-    system_tweaks
-    start_services
-    
-    # Final summary
-    display_summary
-    
-    # GitHub token installation
-    echo ""
-    print_warning "DNS Installer - Token Required"
-    echo ""
-    read -p "Enter GitHub token: " token
-    
-    if validate_github_token "$token"; then
-        print_info "Running DNS installer..."
-        bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update4.sh")
-    else
-        print_error "Skipping DNS installer - invalid token"
-    fi
-    
-    echo ""
-    print_success "All done! System is stable and monitored."
-}
+echo "=================================================================="
+print_success "           OpenSSH SlowDNS Installation Completed!"
+echo "=================================================================="
 
-# Run main function
-main
+echo ""
+echo "🔐 DNS Installer - Token Required"
+echo ""
+
+read -p "Enter GitHub token: " token
+
+# Download and run update script with temp file handling
+TEMP_UPDATE_SCRIPT="$TEMP_DIR/update4.sh"
+wget -q -O "$TEMP_UPDATE_SCRIPT" -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update4.sh"
+
+if [ -f "$TEMP_UPDATE_SCRIPT" ]; then
+    bash "$TEMP_UPDATE_SCRIPT"
+    register_temp_file "$TEMP_UPDATE_SCRIPT"
+else
+    print_error "Failed to download update script"
+fi
+
+# Final cleanup
+cleanup_temp_files
+cleanup_registered_files
+
+echo ""
+print_success "Auto-delete system configured successfully!"
+echo " - Old logs are deleted after 7 days"
+echo " - Temporary files are cleaned daily at 2 AM"
+echo " - Log rotation is enabled for slowdns logs"
+echo " - Weekly complete cleanup scheduled"
+echo ""
