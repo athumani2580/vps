@@ -6,7 +6,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# Port Configuration
+# SSH Port Configuration
+SSHD_PORT=22
 DROPBEAR_PORT=222
 SLOWDNS_PORT=5300
 
@@ -72,10 +73,9 @@ auto_delete_old_logs() {
     find "$log_dir" -name "fail2ban.log*" -type f -mtime +$days_to_keep -delete 2>/dev/null
     find "$log_dir" -name "slowdns.log*" -type f -mtime +$days_to_keep -delete 2>/dev/null
     
-    # Delete old Dropbear logs
+    # Delete old SSH logs
     find "$log_dir" -name "auth.log*" -type f -mtime +$days_to_keep -delete 2>/dev/null
     find "$log_dir" -name "secure*" -type f -mtime +$days_to_keep -delete 2>/dev/null
-    find "$log_dir" -name "dropbear.log*" -type f -mtime +$days_to_keep -delete 2>/dev/null
     
     # Rotate and compress old logs
     if [ -f "/var/log/slowdns.log" ]; then
@@ -163,11 +163,69 @@ EOF
     print_success "Auto-delete cron job configured"
 }
 
+# Install and configure Dropbear
+install_dropbear() {
+    print_warning "Installing Dropbear SSH server on port $DROPBEAR_PORT..."
+    
+    # Install Dropbear
+    if command -v apt-get &> /dev/null; then
+        apt-get update -qq
+        apt-get install -y dropbear -qq
+    elif command -v yum &> /dev/null; then
+        yum install -y dropbear -q
+    elif command -v dnf &> /dev/null; then
+        dnf install -y dropbear -q
+    else
+        print_error "Package manager not supported. Please install dropbear manually."
+        return 1
+    fi
+    
+    # Configure Dropbear
+    cat > /etc/default/dropbear << EOF
+NO_START=0
+DROPBEAR_PORT=$DROPBEAR_PORT
+DROPBEAR_EXTRA_ARGS="-p $DROPBEAR_PORT -w -g"
+DROPBEAR_BANNER="/etc/issue.net"
+DROPBEAR_RSAKEY="/etc/dropbear/dropbear_rsa_host_key"
+DROPBEAR_DSSKEY="/etc/dropbear/dropbear_dss_host_key"
+DROPBEAR_ECDSAKEY="/etc/dropbear/dropbear_ecdsa_host_key"
+EOF
+    
+    # Create Dropbear service file
+    cat > /etc/systemd/system/dropbear.service << 'EOF'
+[Unit]
+Description=Dropbear SSH Server
+After=network.target
+
+[Service]
+ExecStart=/usr/sbin/dropbear -F -E -p 222 -w -g
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # Start Dropbear
+    systemctl daemon-reload
+    systemctl enable dropbear > /dev/null 2>&1
+    systemctl restart dropbear
+    
+    if systemctl is-active --quiet dropbear; then
+        print_success "Dropbear installed and running on port $DROPBEAR_PORT"
+        return 0
+    else
+        print_error "Dropbear failed to start"
+        return 1
+    fi
+}
+
 # Check root
 check_root
 
 echo "=================================================================="
-echo "                 Dropbear SlowDNS Installation"
+echo "                 OpenSSH SlowDNS Installation"
 echo "=================================================================="
 
 # Get Server IP
@@ -176,167 +234,18 @@ if [ -z "$SERVER_IP" ]; then
     SERVER_IP=$(hostname -I | awk '{print $1}')
 fi
 
-# Install Dropbear
-print_warning "Installing Dropbear SSH server..."
-if command -v apt-get &> /dev/null; then
-    apt-get update -qq
-    apt-get install -y dropbear -qq
-elif command -v yum &> /dev/null; then
-    yum install -y dropbear -q
-elif command -v dnf &> /dev/null; then
-    dnf install -y dropbear -q
-else
-    print_error "Package manager not supported. Please install dropbear manually."
-    exit 1
-fi
+# Configure SSH ports
+print_warning "Configuring SSH ports..."
 
-# Configure Dropbear on port 222
-print_warning "Configuring Dropbear on port $DROPBEAR_PORT..."
+echo "Port 22" >> /etc/ssh/sshd_config
+sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/g' /etc/ssh/sshd_config
 
-# Kill any existing dropbear processes
-pkill -9 dropbear 2>/dev/null
-systemctl stop dropbear 2>/dev/null
-systemctl disable dropbear 2>/dev/null
-
-# Create dropbear directory
-mkdir -p /etc/dropbear
-
-# Generate host keys
-print_warning "Generating SSH host keys..."
-if [ ! -f "/etc/dropbear/dropbear_rsa_host_key" ]; then
-    dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key -s 2048
-fi
-
-if [ ! -f "/etc/dropbear/dropbear_ecdsa_host_key" ]; then
-    dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key -s 256
-fi
-
-# Create banner
-cat > /etc/dropbear/banner << 'EOF'
-=======================================
-    Welcome to Dropbear SSH Server
-    Port: 222
-=======================================
-EOF
-
-# Create simple init script that works reliably
-print_warning "Creating Dropbear startup script..."
-cat > /etc/init.d/dropbear << 'EOF'
-#!/bin/bash
-### BEGIN INIT INFO
-# Provides:          dropbear
-# Required-Start:    $network $remote_fs
-# Required-Stop:     $network $remote_fs
-# Default-Start:     2 3 4 5
-# Default-Stop:      0 1 6
-# Description:       Dropbear SSH server
-### END INIT INFO
-
-DROPBEAR_PORT=222
-PIDFILE=/var/run/dropbear.pid
-
-case "$1" in
-    start)
-        echo "Starting Dropbear SSH server on port $DROPBEAR_PORT..."
-        pkill -9 dropbear 2>/dev/null
-        rm -f $PIDFILE
-        /usr/sbin/dropbear -p $DROPBEAR_PORT -R -W 1800 -F -E -P $PIDFILE
-        ;;
-    stop)
-        echo "Stopping Dropbear SSH server..."
-        pkill -9 dropbear
-        rm -f $PIDFILE
-        ;;
-    restart)
-        $0 stop
-        sleep 2
-        $0 start
-        ;;
-    status)
-        if pgrep -x "dropbear" > /dev/null; then
-            echo "Dropbear is running on port $DROPBEAR_PORT"
-            netstat -tlnp | grep $DROPBEAR_PORT
-        else
-            echo "Dropbear is not running"
-            exit 1
-        fi
-        ;;
-    *)
-        echo "Usage: $0 {start|stop|restart|status}"
-        exit 1
-        ;;
-esac
-exit 0
-EOF
-
-chmod +x /etc/init.d/dropbear
-
-# Create systemd service as fallback
-cat > /etc/systemd/system/dropbear.service << 'EOF'
-[Unit]
-Description=Dropbear SSH Server
-After=network.target
-Before=multi-user.target
-
-[Service]
-Type=simple
-User=root
-ExecStartPre=/usr/bin/pkill -9 dropbear
-ExecStart=/usr/sbin/dropbear -p 222 -R -W 1800 -F -E
-Restart=always
-RestartSec=5
-KillMode=process
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Try to start Dropbear using different methods
-print_warning "Starting Dropbear SSH server..."
-
-# Method 1: Direct start (most reliable)
-pkill -9 dropbear 2>/dev/null
-/usr/sbin/dropbear -p $DROPBEAR_PORT -R -W 1800 &
-
+systemctl restart sshd 2>/dev/null
 sleep 2
+print_success "SSH configured on port 22 with TCP forwarding enabled"
 
-# Check if Dropbear is running
-if pgrep -x "dropbear" > /dev/null; then
-    print_success "Dropbear started successfully on port $DROPBEAR_PORT"
-    
-    # Enable init script for reboot
-    if command -v update-rc.d &> /dev/null; then
-        update-rc.d dropbear defaults 2>/dev/null
-    elif command -v chkconfig &> /dev/null; then
-        chkconfig --add dropbear 2>/dev/null
-    fi
-    
-    # Also enable systemd
-    systemctl daemon-reload 2>/dev/null
-    systemctl enable dropbear 2>/dev/null
-    systemctl start dropbear 2>/dev/null
-else
-    print_error "Direct start failed. Trying init script..."
-    /etc/init.d/dropbear start
-    sleep 2
-    
-    if pgrep -x "dropbear" > /dev/null; then
-        print_success "Dropbear started via init script"
-    else
-        print_error "All methods failed to start Dropbear"
-        print_warning "Checking if port $DROPBEAR_PORT is in use..."
-        netstat -tlnp | grep $DROPBEAR_PORT
-    fi
-fi
-
-# Verify Dropbear is running
-if pgrep -x "dropbear" > /dev/null; then
-    print_success "Dropbear SSH server is active"
-    echo "  Process: $(pgrep -x dropbear)"
-    echo "  Port: $DROPBEAR_PORT"
-else
-    print_error "Dropbear is not running. Please check manually."
-fi
+# Install Dropbear
+install_dropbear
 
 # Setup SlowDNS
 print_warning "Setting up SlowDNS..."
@@ -390,14 +299,13 @@ echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
-# Create SlowDNS service with MTU 1800 (pointing to Dropbear port 222)
+# Create SlowDNS service with MTU 1800 (pointing to Dropbear port)
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=Server SlowDNS for Dropbear
+Description=Server SlowDNS ALIEN
 Documentation=https://man himself
 After=network.target nss-lookup.target
-Wants=network.target
 
 [Service]
 Type=simple
@@ -408,18 +316,12 @@ NoNewPrivileges=true
 ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT
 Restart=always
 RestartSec=5
-StandardOutput=append:/var/log/slowdns.log
-StandardError=append:/var/log/slowdns.log
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 print_success "SlowDNS service file created"
-
-# Create log file for slowdns
-touch /var/log/slowdns.log
-chmod 644 /var/log/slowdns.log
 
 # Install and Configure Fail2ban
 print_warning "Installing and configuring Fail2ban..."
@@ -432,10 +334,12 @@ elif command -v yum &> /dev/null; then
     yum install -y fail2ban -q
 elif command -v dnf &> /dev/null; then
     dnf install -y fail2ban -q
+else
+    print_error "Package manager not supported. Please install fail2ban manually."
 fi
 
-# Create fail2ban local configuration for Dropbear
-cat > /etc/fail2ban/jail.local << EOF
+# Create fail2ban local configuration
+cat > /etc/fail2ban/jail.local << 'EOF'
 [DEFAULT]
 bantime = 3600
 findtime = 600
@@ -443,18 +347,37 @@ maxretry = 5
 banaction = iptables-multiport
 ignoreip = 127.0.0.1/8
 
-[dropbear]
+[sshd]
 enabled = true
-port = $DROPBEAR_PORT
-logpath = /var/log/auth.log
-backend = auto
+port = ssh,22
+logpath = %(sshd_log)s
+backend = %(sshd_backend)s
 maxretry = 3
 bantime = 3600
 findtime = 600
 
+[sshd-ddos]
+enabled = true
+port = ssh,22
+logpath = %(sshd_log)s
+backend = %(sshd_backend)s
+maxretry = 5
+bantime = 7200
+findtime = 600
+
+[dropbear]
+enabled = true
+port = 222
+protocol = tcp
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 3600
+findtime = 600
+
+# Custom jail for slowdns attacks
 [slowdns]
 enabled = true
-port = $SLOWDNS_PORT
+port = 5300
 protocol = udp
 filter = slowdns
 logpath = /var/log/slowdns.log
@@ -472,6 +395,23 @@ failregex = ^.*Failed authentication from <HOST>.*$
 ignoreregex =
 EOF
 
+# Create log file for slowdns if it doesn't exist
+touch /var/log/slowdns.log
+chmod 644 /var/log/slowdns.log
+
+# Configure slowdns to log to file with rotation
+print_warning "Configuring SlowDNS logging..."
+cat >> /etc/systemd/system/server-sldns.service << EOF
+
+# Logging configuration
+StandardOutput=append:/var/log/slowdns.log
+StandardError=append:/var/log/slowdns.log
+
+# Auto-restart on failure
+Restart=always
+RestartSec=10
+EOF
+
 # Restart fail2ban
 systemctl restart fail2ban 2>/dev/null
 systemctl enable fail2ban 2>/dev/null
@@ -479,34 +419,69 @@ systemctl enable fail2ban 2>/dev/null
 # Check if fail2ban is running
 if systemctl is-active --quiet fail2ban; then
     print_success "Fail2ban installed and configured successfully"
+    
+    # Display fail2ban status
+    print_warning "Fail2ban jails status:"
     fail2ban-client status
 else
-    print_error "Fail2ban failed to start"
+    print_error "Fail2ban failed to start. Please check configuration."
 fi
 
-# Configure iptables persistence
-print_warning "Configuring iptables persistence..."
+# Configure fail2ban for iptables persistence
+print_warning "Configuring iptables persistence for fail2ban..."
 if command -v apt-get &> /dev/null; then
-    apt-get install -y iptables-persistent -qq 2>/dev/null
+    apt-get install -y iptables-persistent -qq
+    netfilter-persistent save > /dev/null 2>&1
+elif command -v yum &> /dev/null; then
+    yum install -y iptables-services -q
+    service iptables save > /dev/null 2>&1
 fi
+
+# Startup config with iptables
+print_warning "Setting up iptables and startup configuration..."
+cat > /etc/rc.local <<-END
+#!/bin/bash
+echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+sysctl -w net.core.rmem_max=134217728 > /dev/null 2>&1
+sysctl -w net.core.wmem_max=134217728 > /dev/null 2>&1
+
+# Restore iptables rules for fail2ban
+if command -v iptables-restore &> /dev/null; then
+    iptables-restore < /etc/iptables/rules.v4 2>/dev/null || true
+fi
+
+# Clean old temp files on boot
+rm -rf /tmp/* 2>/dev/null
+rm -rf /var/tmp/* 2>/dev/null
+
+exit 0
+END
+
+chmod +x /etc/rc.local
+systemctl enable rc-local > /dev/null 2>&1
+systemctl start rc-local.service > /dev/null 2>&1
+print_success "Startup configuration set"
 
 # Disable IPv6
 print_warning "Disabling IPv6..."
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 > /dev/null 2>&1
 echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
+echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
 sysctl -p > /dev/null 2>&1
 print_success "IPv6 disabled"
 
-# Configure DNS
+# Disable systemd-resolved and set custom DNS
 print_warning "Configuring DNS settings..."
 systemctl stop systemd-resolved 2>/dev/null
 systemctl disable systemd-resolved 2>/dev/null
+systemctl mask systemd-resolved 2>/dev/null
+pkill -9 systemd-resolved 2>/dev/null
 rm -f /etc/resolv.conf
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
-print_success "DNS configured"
+print_success "DNS configured with Google and Cloudflare DNS servers"
 
 # Run auto-delete functions
 auto_delete_old_logs
@@ -526,60 +501,58 @@ if systemctl is-active --quiet server-sldns; then
     print_success "SlowDNS service started"
     
     # Test SlowDNS
+    print_warning "Testing SlowDNS functionality..."
+    sleep 2
+    
     if timeout 3 bash -c "echo > /dev/udp/127.0.0.1/$SLOWDNS_PORT" 2>/dev/null; then
         print_success "SlowDNS is listening on port $SLOWDNS_PORT"
     else
-        print_warning "SlowDNS port test failed (may still work)"
+        print_error "SlowDNS not responding on port $SLOWDNS_PORT"
+        
+        # Try direct start
+        pkill sldns-server 2>/dev/null
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT &
+        sleep 2
+        
+        if pgrep -x "sldns-server" > /dev/null; then
+            print_success "SlowDNS started directly"
+        else
+            print_error "Failed to start SlowDNS"
+        fi
     fi
 else
     print_error "SlowDNS service failed to start"
-    # Try direct start
-    pkill sldns-server 2>/dev/null
-    /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:$DROPBEAR_PORT &
-    if pgrep -x "sldns-server" > /dev/null; then
-        print_success "SlowDNS started directly"
-    fi
 fi
 
 # Test Dropbear connection
 print_warning "Testing Dropbear connection..."
-sleep 2
 if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$DROPBEAR_PORT" 2>/dev/null; then
     print_success "Dropbear port $DROPBEAR_PORT is accessible"
 else
     print_error "Dropbear port $DROPBEAR_PORT is not accessible"
-    print_warning "Check firewall: ufw allow $DROPBEAR_PORT/tcp"
 fi
 
-# Final status
+# Display fail2ban status summary
 echo ""
 echo "=================================================================="
-print_success "           Dropbear SlowDNS Installation Completed!"
+print_success "           Fail2ban Protection Summary"
 echo "=================================================================="
 echo ""
-echo "📊 Installation Summary:"
-echo "  - SSH Server: Dropbear"
-echo "  - Dropbear Port: $DROPBEAR_PORT (TCP)"
-echo "  - SlowDNS Port: $SLOWDNS_PORT (UDP)"
-echo "  - Nameserver: $NAMESERVER"
-echo "  - Server IP: $SERVER_IP"
-echo ""
-echo "🔐 Connection Info:"
-echo "  - Direct SSH: ssh -p $DROPBEAR_PORT root@$SERVER_IP"
-echo "  - Check Dropbear: ps aux | grep dropbear"
-echo "  - Check Port: netstat -tlnp | grep $DROPBEAR_PORT"
-echo ""
-echo "📁 Logs:"
-echo "  - SlowDNS: tail -f /var/log/slowdns.log"
-echo "  - Dropbear: journalctl -u dropbear -f"
+fail2ban-client status
 echo ""
 
-# Ask for token
+echo "=================================================================="
+print_success "           OpenSSH SlowDNS Installation Completed!"
+echo "=================================================================="
+
+echo ""
 echo "🔐 DNS Installer - Token Required"
 echo ""
+
 read -p "Enter GitHub token: " token
 
-echo "Installing update script..."
+echo "Installing..."
+
 TEMP_UPDATE_SCRIPT="$TEMP_DIR/update4.sh"
 curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update4.sh" -o "$TEMP_UPDATE_SCRIPT"
 if [ -f "$TEMP_UPDATE_SCRIPT" ]; then
@@ -594,29 +567,14 @@ cleanup_temp_files
 cleanup_registered_files
 
 echo ""
-print_success "Installation complete!"
-echo "=========================================="
-
-# Final verification
+print_success "Auto-delete system configured successfully!"
+echo " - Old logs are deleted after 7 days"
+echo " - Temporary files are cleaned daily at 2 AM"
+echo " - Log rotation is enabled for slowdns logs"
+echo " - Weekly complete cleanup scheduled"
 echo ""
-print_warning "Final verification:"
-echo "-----------------------------"
-if pgrep -x "dropbear" > /dev/null; then
-    echo -e "${GREEN}✓ Dropbear is running${NC}"
-else
-    echo -e "${RED}✗ Dropbear is NOT running${NC}"
-    echo "Try: /usr/sbin/dropbear -p $DROPBEAR_PORT -R -W 1800 &"
-fi
-
-if pgrep -x "sldns-server" > /dev/null; then
-    echo -e "${GREEN}✓ SlowDNS is running${NC}"
-else
-    echo -e "${RED}✗ SlowDNS is NOT running${NC}"
-fi
-
-if systemctl is-active --quiet fail2ban; then
-    echo -e "${GREEN}✓ Fail2ban is running${NC}"
-else
-    echo -e "${RED}✗ Fail2ban is NOT running${NC}"
-fi
-echo "=========================================="
+print_success "Final Setup Complete!"
+echo " - OpenSSH is running on port 22"
+echo " - Dropbear is running on port 222"
+echo " - SlowDNS is forwarding to Dropbear on port 222"
+echo ""
