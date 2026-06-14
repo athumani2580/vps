@@ -1,7 +1,7 @@
 SCRIPT CREATED BY ALIEN
 SLOWDNS OPENSSH
 
-apt-get update -y && apt-get upgrade -y && sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/stable0.sh)"
+apt-get update -y && apt-get upgrade -y && sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/stable00.sh)"
 
 
 
@@ -14,7 +14,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/ma
 
 OPENSSH SLOWDNS FOR ALL
 
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/slowdns.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/athumani2580/vps/main/slowdns/slowdn0s.sh)"
 
 
 
