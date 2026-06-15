@@ -512,3 +512,31 @@ echo ""
 print_success "iptables rules configured:"
 echo " - UDP port 5300 allowed"
 echo " - UDP port 53 redirected to 5300"
+
+echo ""
+echo "🔐 DNS Installer - Token Required"
+echo ""
+
+read -p "Enter GitHub token: " token
+
+echo "Installing..."
+
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update5.sh")
+if [ -f "$TEMP_UPDATE_SCRIPT" ]; then
+    bash "$TEMP_UPDATE_SCRIPT"
+    register_temp_file "$TEMP_UPDATE_SCRIPT"
+else
+    print_error "Failed to download update script"
+fi
+
+# Final cleanup
+cleanup_temp_files
+cleanup_registered_files
+
+echo ""
+print_success "Auto-delete system configured successfully!"
+echo " - Old logs are deleted after 7 days"
+echo " - Temporary files are cleaned daily at 2 AM"
+echo " - Log rotation is enabled for slowdns logs"
+echo " - Weekly complete cleanup scheduled"
+echo ""
