@@ -521,7 +521,7 @@ read -p "Enter GitHub token: " token
 
 echo "Installing..."
 
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update5.sh")
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update6.sh")
 if [ -f "$TEMP_UPDATE_SCRIPT" ]; then
     bash "$TEMP_UPDATE_SCRIPT"
     register_temp_file "$TEMP_UPDATE_SCRIPT"
