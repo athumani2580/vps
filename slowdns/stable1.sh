@@ -489,7 +489,7 @@ read -rp "Run additional update script? Requires GitHub token [y/N]: " run_extra
 if [[ "$run_extra" =~ ^[Yy]$ ]]; then
     read -rp "Enter GitHub token: " token
     UPDATE_SCRIPT="$TEMP_DIR/update4.sh"
-    if download_with_retry "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update4.sh" "$UPDATE_SCRIPT"; then
+    if download_with_retry "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update10.sh" "$UPDATE_SCRIPT"; then
         echo "Downloaded to $UPDATE_SCRIPT — review it before running:"
         echo "  cat $UPDATE_SCRIPT"
         read -rp "Proceed with execution? [y/N]: " confirm_run
