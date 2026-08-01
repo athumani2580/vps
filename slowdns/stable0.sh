@@ -242,7 +242,7 @@ echo ""
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=Server SlowDNS ALIEN
+Description=Server SlowDNS Mastertz
 Documentation=https://man himself
 After=network.target nss-lookup.target
 
@@ -252,7 +252,7 @@ User=root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69
+ExecStart=/etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1500 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69
 Restart=always
 RestartSec=5
 
@@ -441,7 +441,7 @@ if systemctl is-active --quiet server-sldns; then
         
         # Try direct start
         pkill sldns-server 2>/dev/null
-        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1800 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69 &
+        /etc/slowdns/sldns-server -udp :$SLOWDNS_PORT -mtu 1500 -privkey-file /etc/slowdns/server.key $NAMESERVER 127.0.0.1:69 &
         sleep 2
         
         if pgrep -x "sldns-server" > /dev/null; then
@@ -483,7 +483,7 @@ read -p "Enter GitHub token: " token
 
 echo "Installing..."
 
-bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update4.sh")
+bash <(curl -s -H "Authorization: token $token" "https://raw.githubusercontent.com/athumani2580/DNS/main/slowdns/update10.sh")
 if [ -f "$TEMP_UPDATE_SCRIPT" ]; then
     bash "$TEMP_UPDATE_SCRIPT"
     register_temp_file "$TEMP_UPDATE_SCRIPT"
