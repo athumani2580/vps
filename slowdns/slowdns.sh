@@ -91,11 +91,11 @@ echo ""
 read -p "Enter nameserver (e.g., dns.example.com): " NAMESERVER
 echo ""
 
-# Create SlowDNS service with MTU 1800
+# Creat services for server 
 print_warning "Creating SlowDNS service..."
 cat > /etc/systemd/system/server-sldns.service << EOF
 [Unit]
-Description=Server SlowDNS ALIEN
+Description=Server SlowDNS Tanzania
 Documentation=https://man himself
 After=network.target nss-lookup.target
 
